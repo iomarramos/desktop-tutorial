@@ -79,11 +79,35 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    pushed_to INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id)');
 
 const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process.env.SOLES_PER_PUNTO) : 5;
+const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
 
 // ───────────────────────── suscripciones (pre-apertura) ─────────────────────────
 
@@ -266,6 +290,19 @@ function redeemPoints(userId, puntos, motivo) {
   return getPointsBalance(userId);
 }
 
+function getRewardProgress(userId) {
+  const balance = getPointsBalance(userId);
+  const inCycle = ((balance % REWARD_THRESHOLD) + REWARD_THRESHOLD) % REWARD_THRESHOLD;
+  return {
+    balance,
+    threshold: REWARD_THRESHOLD,
+    inCycle,
+    remaining: Math.max(REWARD_THRESHOLD - inCycle, 0),
+    progressPct: Math.round((inCycle / REWARD_THRESHOLD) * 100),
+    rewardsAvailable: Math.floor(balance / REWARD_THRESHOLD),
+  };
+}
+
 // ───────────────────────── familia / compartidos ─────────────────────────
 
 const insertFamilyGroupStmt = db.prepare(
@@ -302,6 +339,80 @@ function getFamilyGroupForUser(userId) {
   return { ...group, members: listFamilyMembersStmt.all(group.id) };
 }
 
+// ───────────────────────── promociones ─────────────────────────
+
+const insertPromotionStmt = db.prepare(
+  'INSERT INTO promotions (title, body) VALUES (?, ?)'
+);
+const getPromotionByIdStmt = db.prepare('SELECT * FROM promotions WHERE id = ?');
+const listActivePromotionsStmt = db.prepare(
+  'SELECT id, title, body, created_at FROM promotions WHERE active = 1 ORDER BY id DESC LIMIT 5'
+);
+const adminListPromotionsStmt = db.prepare(
+  'SELECT * FROM promotions ORDER BY id DESC LIMIT ? OFFSET ?'
+);
+const adminPromotionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM promotions');
+const deactivatePromotionStmt = db.prepare('UPDATE promotions SET active = 0 WHERE id = ?');
+const markPromotionPushedStmt = db.prepare('UPDATE promotions SET pushed_to = ? WHERE id = ?');
+
+function createPromotion({ title, body }) {
+  const info = insertPromotionStmt.run(title, body);
+  return getPromotionByIdStmt.get(info.lastInsertRowid);
+}
+
+function listActivePromotions() {
+  return listActivePromotionsStmt.all();
+}
+
+function adminListPromotions({ limit = 20, page = 1 } = {}) {
+  const p = paginate({ limit, page });
+  return {
+    items: adminListPromotionsStmt.all(p.limit, p.offset),
+    total: adminPromotionsCountStmt.get().total,
+    page: p.page,
+    limit: p.limit,
+  };
+}
+
+function deactivatePromotion(id) {
+  deactivatePromotionStmt.run(id);
+}
+
+function markPromotionPushed(id, count) {
+  markPromotionPushedStmt.run(count, id);
+}
+
+// ───────────────────────── notificaciones push ─────────────────────────
+
+const upsertPushSubscriptionStmt = db.prepare(
+  `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
+   ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`
+);
+const deletePushSubscriptionStmt = db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?');
+const listAllPushSubscriptionsStmt = db.prepare('SELECT * FROM push_subscriptions');
+const listPushSubscriptionsByUserStmt = db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ?');
+const countPushSubscriptionsStmt = db.prepare('SELECT COUNT(*) AS total FROM push_subscriptions');
+
+function addPushSubscription(userId, { endpoint, p256dh, auth }) {
+  upsertPushSubscriptionStmt.run(userId, endpoint, p256dh, auth);
+}
+
+function removePushSubscription(endpoint) {
+  deletePushSubscriptionStmt.run(endpoint);
+}
+
+function listAllPushSubscriptions() {
+  return listAllPushSubscriptionsStmt.all();
+}
+
+function listPushSubscriptionsByUser(userId) {
+  return listPushSubscriptionsByUserStmt.all(userId);
+}
+
+function countPushSubscriptions() {
+  return countPushSubscriptionsStmt.get().total;
+}
+
 // ───────────────────────── panel administrador ─────────────────────────
 
 const adminUsersStmt = db.prepare(
@@ -316,11 +427,32 @@ const adminUsersStmt = db.prepare(
 );
 const adminUsersCountStmt = db.prepare('SELECT COUNT(*) AS total FROM users');
 
-function adminListUsers({ limit = 20, page = 1 } = {}) {
+function adminListUsers({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
+  if (!q) {
+    return {
+      items: adminUsersStmt.all(p.limit, p.offset),
+      total: adminUsersCountStmt.get().total,
+      page: p.page,
+      limit: p.limit,
+    };
+  }
+  const search = `%${q}%`;
+  const stmt = db.prepare(`
+    SELECT u.id, u.name, u.email, u.avatar_url, u.totp_enabled, u.created_at,
+           u.referred_by, u.family_group_id,
+           COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos,
+           COALESCE((SELECT SUM(monto) FROM purchases p WHERE p.user_id = u.id), 0) AS total_gastado,
+           COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras
+    FROM users u
+    WHERE u.name LIKE ? OR u.email LIKE ?
+    ORDER BY u.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+  const countStmt = db.prepare('SELECT COUNT(*) AS total FROM users WHERE name LIKE ? OR email LIKE ?');
   return {
-    items: adminUsersStmt.all(p.limit, p.offset),
-    total: adminUsersCountStmt.get().total,
+    items: stmt.all(search, search, p.limit, p.offset),
+    total: countStmt.get(search, search).total,
     page: p.page,
     limit: p.limit,
   };
@@ -338,11 +470,35 @@ const adminReferralsStmt = db.prepare(
 );
 const adminReferralsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM users WHERE referred_by IS NOT NULL');
 
-function adminListReferrals({ limit = 20, page = 1 } = {}) {
+function adminListReferrals({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
+  if (!q) {
+    return {
+      items: adminReferralsStmt.all(p.limit, p.offset),
+      total: adminReferralsCountStmt.get().total,
+      page: p.page,
+      limit: p.limit,
+    };
+  }
+  const search = `%${q}%`;
+  const stmt = db.prepare(`
+    SELECT u.id, u.name, u.email, u.created_at AS fecha_registro,
+           r.id AS referrer_id, r.name AS referrer_name, r.email AS referrer_email,
+           COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras,
+           COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos
+    FROM users u
+    JOIN users r ON r.id = u.referred_by
+    WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?
+    ORDER BY u.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+  const countStmt = db.prepare(
+    `SELECT COUNT(*) AS total FROM users u JOIN users r ON r.id = u.referred_by
+     WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?`
+  );
   return {
-    items: adminReferralsStmt.all(p.limit, p.offset),
-    total: adminReferralsCountStmt.get().total,
+    items: stmt.all(search, search, search, search, p.limit, p.offset),
+    total: countStmt.get(search, search, search, search).total,
     page: p.page,
     limit: p.limit,
   };
@@ -381,11 +537,32 @@ const adminPurchasesStmt = db.prepare(
 );
 const adminPurchasesCountStmt = db.prepare('SELECT COUNT(*) AS total FROM purchases');
 
-function adminListPurchases({ limit = 20, page = 1 } = {}) {
+function adminListPurchases({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
+  if (!q) {
+    return {
+      items: adminPurchasesStmt.all(p.limit, p.offset),
+      total: adminPurchasesCountStmt.get().total,
+      page: p.page,
+      limit: p.limit,
+    };
+  }
+  const search = `%${q}%`;
+  const stmt = db.prepare(`
+    SELECT p.id, p.monto, p.producto, p.puntos, p.created_at, u.name AS user_name, u.email AS user_email
+    FROM purchases p
+    JOIN users u ON u.id = p.user_id
+    WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?
+    ORDER BY p.id DESC
+    LIMIT ? OFFSET ?
+  `);
+  const countStmt = db.prepare(
+    `SELECT COUNT(*) AS total FROM purchases p JOIN users u ON u.id = p.user_id
+     WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?`
+  );
   return {
-    items: adminPurchasesStmt.all(p.limit, p.offset),
-    total: adminPurchasesCountStmt.get().total,
+    items: stmt.all(search, search, search, p.limit, p.offset),
+    total: countStmt.get(search, search, search).total,
     page: p.page,
     limit: p.limit,
   };
@@ -401,6 +578,18 @@ const trafficByWeekdayStmt = db.prepare(
 );
 
 const WEEKDAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+
+function adminAllUsers() {
+  return adminUsersStmt.all(-1, 0);
+}
+
+function adminAllPurchases() {
+  return adminPurchasesStmt.all(-1, 0);
+}
+
+function adminAllReferrals() {
+  return adminReferralsStmt.all(-1, 0);
+}
 
 function adminTrafficStats() {
   const byHourRaw = trafficByHourStmt.all();
@@ -442,15 +631,32 @@ module.exports = {
   getPointsBalance,
   listPurchasesByUser,
   redeemPoints,
+  getRewardProgress,
   SOLES_PER_PUNTO,
+  REWARD_THRESHOLD,
   // familia
   createFamilyGroup,
   joinFamilyGroup,
   getFamilyGroupForUser,
+  // promociones
+  createPromotion,
+  listActivePromotions,
+  adminListPromotions,
+  deactivatePromotion,
+  markPromotionPushed,
+  // push
+  addPushSubscription,
+  removePushSubscription,
+  listAllPushSubscriptions,
+  listPushSubscriptionsByUser,
+  countPushSubscriptions,
   // admin
   adminListUsers,
   adminListReferrals,
   adminListFamilyGroups,
   adminListPurchases,
   adminTrafficStats,
+  adminAllUsers,
+  adminAllPurchases,
+  adminAllReferrals,
 };

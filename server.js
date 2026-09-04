@@ -7,12 +7,17 @@ const {
   upsertGoogleUser, getUserById, getUserByEmail, getUserByReferralCode, setReferredBy,
   setTotpSecret, enableTotp,
   createSession, getSession, setSessionStage, deleteSession,
-  addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, SOLES_PER_PUNTO,
+  addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
   createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser,
+  createPromotion, listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
+  addPushSubscription, removePushSubscription, listAllPushSubscriptions,
   adminListUsers, adminListReferrals, adminListFamilyGroups, adminListPurchases, adminTrafficStats,
+  adminAllUsers, adminAllPurchases, adminAllReferrals,
 } = require('./db');
 const google = require('./auth/google');
 const totp = require('./auth/totp');
+const push = require('./auth/push');
+const googleWallet = require('./auth/googleWallet');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -152,18 +157,21 @@ function requireActiveUser(req) {
 // ───────────────────────── perfil / wallet ─────────────────────────
 
 function serializeUser(user) {
-  const balance = getPointsBalance(user.id);
   const family = getFamilyGroupForUser(user.id);
+  const reward = getRewardProgress(user.id);
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     avatarUrl: user.avatar_url,
-    puntos: balance,
+    puntos: reward.balance,
+    reward,
     referralCode: user.referral_code,
     totpEnabled: Boolean(user.totp_enabled),
     familyGroup: family,
     solesPerPunto: SOLES_PER_PUNTO,
+    pushConfigured: push.isConfigured(),
+    googleWalletConfigured: googleWallet.isConfigured(),
   };
 }
 
@@ -367,6 +375,75 @@ async function handleFamilyJoin(req, res) {
   }
 }
 
+// ───────────────────────── promociones (cliente) ─────────────────────────
+
+function handlePromotionsList(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+  sendJson(res, 200, { ok: true, items: listActivePromotions() });
+}
+
+// ───────────────────────── notificaciones push (cliente) ─────────────────────────
+
+function handlePushVapidKey(req, res) {
+  sendJson(res, 200, { ok: true, configured: push.isConfigured(), publicKey: push.publicKey() });
+}
+
+async function handlePushSubscribe(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const endpoint = String(body.endpoint || '');
+  const p256dh = body.keys && body.keys.p256dh;
+  const authKey = body.keys && body.keys.auth;
+  if (!endpoint || !p256dh || !authKey) {
+    return sendJson(res, 400, { ok: false, error: 'Suscripción push inválida.' });
+  }
+
+  addPushSubscription(user.id, { endpoint, p256dh, auth: authKey });
+  sendJson(res, 201, { ok: true });
+}
+
+async function handlePushUnsubscribe(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+  if (body.endpoint) removePushSubscription(body.endpoint);
+  sendJson(res, 200, { ok: true });
+}
+
+// ───────────────────────── Google Wallet (tarjeta de fidelidad) ─────────────────────────
+
+function handleGoogleWalletPass(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+  if (!googleWallet.isConfigured()) {
+    return sendJson(res, 501, {
+      ok: false,
+      error: 'Agregar a Google Wallet no está configurado (faltan credenciales de Google Wallet Issuer).',
+    });
+  }
+  try {
+    const saveUrl = googleWallet.buildSaveUrl({
+      user: { id: user.id, name: user.name, referralCode: user.referral_code },
+      points: getPointsBalance(user.id),
+    });
+    sendJson(res, 200, { ok: true, saveUrl });
+  } catch {
+    sendJson(res, 500, { ok: false, error: 'No se pudo generar la tarjeta de Google Wallet.' });
+  }
+}
+
 // ───────────────────────── suscripción pre-apertura (existente) ─────────────────────────
 
 async function handleSubscribe(req, res) {
@@ -414,7 +491,7 @@ function handleAdminList(req, res) {
 // ───────────────────────── administrador (wallet / tráfico / referidos / familia) ─────────────────────────
 
 function paginationParams(query) {
-  return { page: query.get('page'), limit: query.get('limit') };
+  return { page: query.get('page'), limit: query.get('limit'), q: query.get('q') || undefined };
 }
 
 async function handleAdminPurchaseCreate(req, res) {
@@ -467,6 +544,124 @@ function handleAdminTraffic(req, res) {
   sendJson(res, 200, { ok: true, ...adminTrafficStats() });
 }
 
+// ───────────────────────── administrador: promociones + push ─────────────────────────
+
+function handleAdminPromotionsList(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, pushConfigured: push.isConfigured(), ...adminListPromotions(paginationParams(query)) });
+}
+
+async function handleAdminPromotionCreate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const title = String(body.title || '').trim();
+  const promoBody = String(body.body || '').trim();
+  if (!title || !promoBody) {
+    return sendJson(res, 400, { ok: false, error: 'La promoción necesita título y texto.' });
+  }
+
+  const promotion = createPromotion({ title, body: promoBody });
+
+  let pushSent = 0;
+  if (push.isConfigured()) {
+    const subs = listAllPushSubscriptions();
+    const results = await Promise.all(
+      subs.map((sub) => push.sendToSubscription(sub, { title, body: promoBody }))
+    );
+    results.forEach((result, i) => {
+      if (result.ok) pushSent += 1;
+      else if (result.gone) removePushSubscription(subs[i].endpoint);
+    });
+    markPromotionPushed(promotion.id, pushSent);
+  }
+
+  sendJson(res, 201, { ok: true, promotion, pushSent });
+}
+
+async function handleAdminPromotionDeactivate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+  deactivatePromotion(body.id);
+  sendJson(res, 200, { ok: true });
+}
+
+// ───────────────────────── administrador: exportar CSV ─────────────────────────
+
+function csvEscape(value) {
+  const str = value === null || value === undefined ? '' : String(value);
+  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+function toCsv(rows, columns) {
+  const header = columns.map((c) => csvEscape(c.label)).join(',');
+  const lines = rows.map((row) => columns.map((c) => csvEscape(row[c.key])).join(','));
+  return [header, ...lines].join('\r\n');
+}
+
+function sendCsv(res, filename, csv) {
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+  });
+  res.end('﻿' + csv);
+}
+
+function handleAdminExportUsers(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  const csv = toCsv(adminAllUsers(), [
+    { key: 'name', label: 'Nombre' },
+    { key: 'email', label: 'Email' },
+    { key: 'puntos', label: 'Estrellas' },
+    { key: 'num_compras', label: 'Compras' },
+    { key: 'total_gastado', label: 'Total gastado' },
+    { key: 'totp_enabled', label: '2FA activo' },
+    { key: 'created_at', label: 'Registrado' },
+  ]);
+  sendCsv(res, 'usuarios.csv', csv);
+}
+
+function handleAdminExportPurchases(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  const csv = toCsv(adminAllPurchases(), [
+    { key: 'created_at', label: 'Fecha' },
+    { key: 'user_name', label: 'Cliente' },
+    { key: 'user_email', label: 'Email' },
+    { key: 'producto', label: 'Producto' },
+    { key: 'monto', label: 'Monto' },
+    { key: 'puntos', label: 'Estrellas' },
+  ]);
+  sendCsv(res, 'compras.csv', csv);
+}
+
+function handleAdminExportReferrals(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  const csv = toCsv(adminAllReferrals(), [
+    { key: 'name', label: 'Usuario' },
+    { key: 'email', label: 'Email' },
+    { key: 'referrer_name', label: 'Referido por' },
+    { key: 'referrer_email', label: 'Email referidor' },
+    { key: 'num_compras', label: 'Compras' },
+    { key: 'puntos', label: 'Estrellas' },
+    { key: 'fecha_registro', label: 'Fecha' },
+  ]);
+  sendCsv(res, 'referidos.csv', csv);
+}
+
 // ───────────────────────── estáticos ─────────────────────────
 
 function serveStatic(req, res, urlPath) {
@@ -516,6 +711,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/points/redeem') return handlePointsRedeem(req, res);
     if (req.method === 'POST' && url === '/api/family/create') return handleFamilyCreate(req, res);
     if (req.method === 'POST' && url === '/api/family/join') return handleFamilyJoin(req, res);
+    if (req.method === 'GET' && url === '/api/promotions') return handlePromotionsList(req, res);
+    if (req.method === 'GET' && url === '/api/wallet/google-pass') return handleGoogleWalletPass(req, res);
+
+    // notificaciones push
+    if (req.method === 'GET' && url === '/api/push/vapid-public-key') return handlePushVapidKey(req, res);
+    if (req.method === 'POST' && url === '/api/push/subscribe') return handlePushSubscribe(req, res);
+    if (req.method === 'POST' && url === '/api/push/unsubscribe') return handlePushUnsubscribe(req, res);
 
     // admin
     if (req.method === 'POST' && url === '/api/admin/purchases') return handleAdminPurchaseCreate(req, res);
@@ -524,6 +726,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/admin/referrals') return handleAdminReferrals(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/family-groups') return handleAdminFamilyGroups(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/stats/traffic') return handleAdminTraffic(req, res);
+    if (req.method === 'GET' && url === '/api/admin/promotions') return handleAdminPromotionsList(req, res, query);
+    if (req.method === 'POST' && url === '/api/admin/promotions') return handleAdminPromotionCreate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/promotions/deactivate') return handleAdminPromotionDeactivate(req, res);
+    if (req.method === 'GET' && url === '/api/admin/export/users.csv') return handleAdminExportUsers(req, res);
+    if (req.method === 'GET' && url === '/api/admin/export/purchases.csv') return handleAdminExportPurchases(req, res);
+    if (req.method === 'GET' && url === '/api/admin/export/referrals.csv') return handleAdminExportReferrals(req, res);
 
     if (req.method === 'GET') return serveStatic(req, res, url);
 

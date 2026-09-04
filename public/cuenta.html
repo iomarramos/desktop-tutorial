@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;700;800;900&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --yellow:#F5C200; --navy:#0D1B4B; --blue:#1E6FCC; --fuchsia:#FF0077; --bone:#F8F4EB;
+  --yellow:#F5C200; --navy:#0D1B4B; --blue:#1E6FCC; --fuchsia:#FF0077; --bone:#F8F4EB; --green:#1FA97E;
   --grad:linear-gradient(90deg,var(--fuchsia),var(--blue));
   --fd:'Poppins',system-ui,sans-serif; --fb:'Inter',system-ui,sans-serif;
 }
@@ -17,25 +17,33 @@
 body{font-family:var(--fb);background:var(--bone);color:var(--navy);min-height:100vh}
 ::selection{background:var(--fuchsia);color:#fff}
 
-header{display:flex;justify-content:space-between;align-items:center;padding:1.2rem 5vw;background:var(--navy)}
+header{display:flex;justify-content:space-between;align-items:center;padding:1.2rem 5vw;background:var(--navy);position:sticky;top:0;z-index:20}
 .logo{display:flex;align-items:center;gap:.6rem;text-decoration:none;font-family:var(--fd);font-weight:900;
   font-size:1.1rem;color:#fff}
 .logo svg{width:36px;height:36px}
 .tag{color:var(--yellow);font-weight:700;font-size:.8rem}
 
-main{max-width:760px;margin:0 auto;padding:3rem 5vw 5rem}
-.card{background:#fff;border-radius:22px;padding:2.2rem;box-shadow:0 20px 50px -30px rgba(13,27,75,.35);margin-bottom:1.6rem}
+main{max-width:760px;margin:0 auto;padding:2rem 5vw 5rem}
+.card{background:#fff;border-radius:22px;padding:2.2rem;box-shadow:0 20px 50px -30px rgba(13,27,75,.35);margin-bottom:1.4rem;
+  animation:rise .4s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .kicker{font-size:.72rem;font-weight:800;letter-spacing:.24em;color:var(--fuchsia);text-transform:uppercase}
 h1{font-family:var(--fd);font-weight:900;font-size:clamp(1.6rem,3.4vw,2.2rem);margin:.4rem 0 1rem}
 p.lead{line-height:1.7;opacity:.85;max-width:56ch}
 
 .btn{display:inline-flex;align-items:center;gap:.6rem;padding:1rem 1.8rem;border-radius:999px;font-family:var(--fd);font-weight:700;
-  font-size:.95rem;text-decoration:none;border:none;cursor:pointer;transition:.3s;background:var(--grad);color:#fff;
+  font-size:.95rem;text-decoration:none;border:none;cursor:pointer;transition:.25s;background:var(--grad);color:#fff;
   box-shadow:0 10px 26px -10px rgba(255,0,119,.55)}
 .btn:hover{transform:translateY(-3px) scale(1.02)}
-.btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
 .btn.ghost{background:none;box-shadow:none;color:var(--navy);border:2px solid rgba(13,27,75,.2)}
 .btn.google{background:#fff;color:#1f1f1f;border:2px solid rgba(13,27,75,.15);box-shadow:none}
+.btn.small{padding:.55rem 1.1rem;font-size:.8rem}
+.btn.wallet{background:#000;color:#fff;box-shadow:none;padding:.7rem 1.4rem}
+
+.spinner{width:34px;height:34px;border-radius:50%;border:4px solid rgba(13,27,75,.15);border-top-color:var(--fuchsia);
+  animation:spin .8s linear infinite;margin:3rem auto}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 .qr-box{display:flex;flex-direction:column;align-items:center;gap:1rem;margin:1.6rem 0}
 #qr-canvas{padding:.8rem;background:#fff;border-radius:16px;border:2px solid rgba(13,27,75,.12)}
@@ -47,12 +55,22 @@ input.otp{padding:1rem 1.3rem;border-radius:14px;border:2px solid rgba(13,27,75,
 input.otp:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 4px rgba(30,111,204,.18)}
 
 .wallet-hero{display:flex;align-items:center;gap:1.4rem;flex-wrap:wrap}
-.avatar{width:64px;height:64px;border-radius:50%;background:var(--navy)}
+.avatar{width:64px;height:64px;border-radius:50%;background:var(--navy);object-fit:cover}
 .balance{background:var(--navy);color:#fff;border-radius:18px;padding:1.4rem 1.8rem;text-align:center;border-bottom:5px solid var(--yellow)}
 .balance b{display:block;font-family:var(--fd);font-size:2.2rem;font-weight:900;color:var(--yellow)}
 .balance span{font-size:.7rem;letter-spacing:.16em;font-weight:700}
 
+.actions-row{display:flex;gap:.7rem;flex-wrap:wrap;margin-top:1.4rem}
+
 h2{font-family:var(--fd);font-weight:900;font-size:1.2rem;margin-bottom:.8rem}
+
+.progress-track{background:var(--bone);border-radius:999px;height:20px;overflow:hidden;margin:.9rem 0 .5rem}
+.progress-fill{height:100%;background:var(--grad);border-radius:999px;transition:width .6s ease;min-width:6%}
+.progress-caption{display:flex;justify-content:space-between;font-size:.82rem;font-weight:600;opacity:.75}
+.reward-ready{background:linear-gradient(90deg,#FFF3D6,#FFE8B8);border:2px dashed var(--yellow);border-radius:14px;
+  padding:.9rem 1.2rem;margin-top:1rem;font-weight:700;font-size:.88rem;display:none}
+.reward-ready.show{display:block}
+
 table{width:100%;border-collapse:collapse;font-size:.88rem}
 th,td{text-align:left;padding:.6rem .4rem;border-bottom:1px solid rgba(13,27,75,.1)}
 th{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;opacity:.6}
@@ -63,14 +81,33 @@ th{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;opacity:.6}
 
 .field{display:grid;gap:.35rem;margin-bottom:.9rem}
 label{font-weight:700;font-size:.85rem}
-input[type=text]{padding:.9rem 1.2rem;border-radius:14px;border:2px solid rgba(13,27,75,.2);font-family:var(--fb);font-size:1rem}
+input[type=text],input[type=number]{padding:.9rem 1.2rem;border-radius:14px;border:2px solid rgba(13,27,75,.2);font-family:var(--fb);font-size:1rem}
 .msg{margin-top:1rem;border-radius:14px;padding:.9rem 1.2rem;font-weight:600;font-size:.9rem;display:none}
 .msg.show{display:block}
 .msg.ok{background:var(--navy);color:#fff;border-left:6px solid var(--yellow)}
 .msg.error{background:#fff0f6;color:var(--fuchsia);border-left:6px solid var(--fuchsia)}
 
+.promo{background:var(--navy);color:#fff;border-radius:18px;padding:1.2rem 1.5rem;margin-bottom:1rem;
+  display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;border-left:6px solid var(--yellow);
+  animation:rise .4s ease both}
+.promo b{font-family:var(--fd);font-size:1rem;display:block;margin-bottom:.2rem}
+.promo p{font-size:.85rem;opacity:.9;line-height:1.5}
+.promo button{background:none;border:none;color:var(--yellow);font-size:1.1rem;cursor:pointer;line-height:1}
+
+.modal-backdrop{position:fixed;inset:0;background:rgba(13,27,75,.55);display:none;align-items:center;justify-content:center;
+  padding:1.5rem;z-index:50}
+.modal-backdrop.show{display:flex}
+.modal{background:#fff;border-radius:20px;padding:2rem;max-width:400px;width:100%}
+.modal h3{font-family:var(--fd);font-weight:900;font-size:1.15rem;margin-bottom:1rem}
+.modal .actions{display:flex;gap:.7rem;margin-top:1rem;justify-content:flex-end}
+
+.skeleton{background:linear-gradient(90deg,#eee,#f6f6f6,#eee);background-size:200% 100%;animation:shimmer 1.4s infinite;
+  border-radius:14px;height:1rem;margin:.4rem 0}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
 .hidden{display:none}
 footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align:center;font-size:.85rem}
+@media(max-width:640px){.wallet-hero{justify-content:center;text-align:center}.actions-row{justify-content:center}}
 </style>
 </head>
 <body>
@@ -84,6 +121,8 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </header>
 
 <main>
+
+<div id="loading" class="spinner"></div>
 
 <!-- ═══ ESTADO: NO AUTENTICADO ═══ -->
 <section id="view-login" class="card hidden">
@@ -131,6 +170,9 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 
 <!-- ═══ ESTADO: WALLET ACTIVA ═══ -->
 <section id="view-wallet" class="hidden">
+
+  <div id="promo-banner"></div>
+
   <div class="card wallet-hero">
     <img class="avatar" id="wallet-avatar" alt="">
     <div style="flex:1;min-width:180px">
@@ -142,7 +184,23 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
       <b id="wallet-balance">0</b>
       <span>ESTRELLAS</span>
     </div>
-    <button class="btn ghost" id="logout-btn">Cerrar sesión</button>
+    <div class="actions-row">
+      <button class="btn small" id="redeem-btn">Canjear puntos</button>
+      <button class="btn ghost small" id="push-btn">🔔 Activar notificaciones</button>
+      <a class="btn wallet small hidden" id="gwallet-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 6h18v12H3z" stroke="#fff" stroke-width="1.5"/><path d="M3 10h18" stroke="#fff" stroke-width="1.5"/></svg>
+        Agregar a Google Wallet
+      </a>
+      <button class="btn ghost small" id="logout-btn">Cerrar sesión</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Tu progreso hacia la próxima recompensa</h2>
+    <p class="lead" id="reward-caption" style="font-size:.85rem"></p>
+    <div class="progress-track"><div class="progress-fill" id="reward-fill" style="width:0%"></div></div>
+    <div class="progress-caption"><span id="reward-current">0</span><span id="reward-target"></span></div>
+    <div class="reward-ready" id="reward-ready"></div>
   </div>
 
   <div class="card">
@@ -159,7 +217,7 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
     <p class="lead" style="margin-bottom:.8rem">Comparte tu enlace: tus referidos quedan vinculados a tu cuenta.</p>
     <div class="ref-box">
       <span>Tu código:</span> <code id="ref-code"></code>
-      <button class="btn ghost" id="copy-ref-btn" style="padding:.5rem 1rem">Copiar enlace</button>
+      <button class="btn ghost small" id="copy-ref-btn">Copiar enlace</button>
     </div>
   </div>
 
@@ -174,14 +232,14 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
         <label for="family-name-input">Crear un grupo nuevo</label>
         <div class="otp-row">
           <input type="text" id="family-name-input" placeholder="Ej. Familia Ramos" style="width:220px;letter-spacing:normal;font-size:1rem">
-          <button class="btn ghost" id="family-create-btn">Crear grupo</button>
+          <button class="btn ghost small" id="family-create-btn">Crear grupo</button>
         </div>
       </div>
       <div class="field">
         <label for="family-code-input">Unirme con un código de invitación</label>
         <div class="otp-row">
           <input type="text" id="family-code-input" placeholder="CÓDIGO" style="width:220px;letter-spacing:normal;font-size:1rem">
-          <button class="btn ghost" id="family-join-btn">Unirme</button>
+          <button class="btn ghost small" id="family-join-btn">Unirme</button>
         </div>
       </div>
     </div>
@@ -193,9 +251,30 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 
 <footer>☕ DESENCAJADO — Papas y Café · Wallet de fidelidad · © 2026</footer>
 
+<!-- ═══ MODAL: canjear puntos ═══ -->
+<div class="modal-backdrop" id="redeem-modal">
+  <div class="modal">
+    <h3>Canjear estrellas</h3>
+    <div class="field">
+      <label for="redeem-amount">Cantidad de estrellas</label>
+      <input type="number" id="redeem-amount" min="1" placeholder="10">
+    </div>
+    <div class="field">
+      <label for="redeem-motivo">¿Por qué producto? (opcional)</label>
+      <input type="text" id="redeem-motivo" placeholder="Ej. Frappé de Lúcuma">
+    </div>
+    <div class="msg" id="redeem-msg"></div>
+    <div class="actions">
+      <button class="btn ghost small" id="redeem-cancel-btn">Cancelar</button>
+      <button class="btn small" id="redeem-confirm-btn">Confirmar canje</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const views = ['login', '2fa-setup', '2fa-verify', 'wallet'];
 function showView(name){
+  document.getElementById('loading').classList.add('hidden');
   views.forEach(v => document.getElementById(`view-${v}`).classList.toggle('hidden', v !== name));
 }
 
@@ -214,8 +293,9 @@ function setMsg(id, kind, text){
   el.className = `msg show ${kind}`;
 }
 
+let currentUser = null;
+
 async function init(){
-  // preserva ?ref= en el botón de Google si venimos de un link compartido
   const params = new URLSearchParams(location.search);
   const ref = params.get('ref');
   if (ref) {
@@ -223,11 +303,6 @@ async function init(){
   }
 
   const { data } = await api('/api/me');
-
-  if (!data.stage && !data.authenticated) {
-    showView('login');
-    return;
-  }
 
   if (data.stage === 'needs_2fa_setup') {
     showView('2fa-setup');
@@ -242,6 +317,7 @@ async function init(){
   }
 
   if (data.authenticated) {
+    currentUser = data.user;
     renderWallet(data.user);
     showView('wallet');
   } else {
@@ -261,6 +337,7 @@ document.getElementById('setup-confirm-btn').addEventListener('click', async () 
   const code = document.getElementById('setup-code').value.trim();
   const { ok, data } = await api('/api/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) });
   if (!ok) { setMsg('setup-msg', 'error', data.error || 'Código incorrecto.'); return; }
+  currentUser = data.user;
   renderWallet(data.user);
   showView('wallet');
 });
@@ -269,6 +346,7 @@ document.getElementById('verify-confirm-btn').addEventListener('click', async ()
   const code = document.getElementById('verify-code').value.trim();
   const { ok, data } = await api('/api/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) });
   if (!ok) { setMsg('verify-msg', 'error', data.error || 'Código incorrecto.'); return; }
+  currentUser = data.user;
   renderWallet(data.user);
   showView('wallet');
 });
@@ -278,12 +356,17 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   location.reload();
 });
 
+// ═══ Wallet principal ═══
+
 function renderWallet(user){
   document.getElementById('wallet-name').textContent = user.name;
   document.getElementById('wallet-email').textContent = user.email;
-  document.getElementById('wallet-avatar').src = user.avatarUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>';
+  document.getElementById('wallet-avatar').src = user.avatarUrl ||
+    'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%230D1B4B"/></svg>');
   document.getElementById('wallet-balance').textContent = user.puntos;
   document.getElementById('ref-code').textContent = user.referralCode;
+
+  renderReward(user.reward);
 
   document.getElementById('copy-ref-btn').onclick = () => {
     const link = `${location.origin}/cuenta.html?ref=${user.referralCode}`;
@@ -307,7 +390,34 @@ function renderWallet(user){
     });
   }
 
+  const gwalletBtn = document.getElementById('gwallet-btn');
+  if (user.googleWalletConfigured) {
+    gwalletBtn.classList.remove('hidden');
+    gwalletBtn.onclick = async (e) => {
+      e.preventDefault();
+      const { ok, data } = await api('/api/wallet/google-pass');
+      if (ok && data.saveUrl) window.open(data.saveUrl, '_blank');
+    };
+  }
+
+  setupPushButton(user);
   loadPurchases();
+  loadPromotions();
+}
+
+function renderReward(reward){
+  document.getElementById('reward-fill').style.width = `${reward.progressPct}%`;
+  document.getElementById('reward-current').textContent = `${reward.inCycle} ⭐`;
+  document.getElementById('reward-target').textContent = `${reward.threshold} ⭐ = 1 recompensa`;
+  document.getElementById('reward-caption').textContent =
+    `Te faltan ${reward.remaining} estrellas para tu próxima recompensa.`;
+  const ready = document.getElementById('reward-ready');
+  if (reward.rewardsAvailable > 0) {
+    ready.classList.add('show');
+    ready.textContent = `🎁 ¡Tienes ${reward.rewardsAvailable} recompensa(s) lista(s) para canjear!`;
+  } else {
+    ready.classList.remove('show');
+  }
 }
 
 async function loadPurchases(){
@@ -325,6 +435,100 @@ async function loadPurchases(){
     body.appendChild(tr);
   });
 }
+
+async function refreshUser(){
+  const { data } = await api('/api/me');
+  if (data.authenticated) {
+    currentUser = data.user;
+    renderWallet(data.user);
+  }
+}
+
+// ═══ Promociones ═══
+
+async function loadPromotions(){
+  const { ok, data } = await api('/api/promotions');
+  const el = document.getElementById('promo-banner');
+  el.innerHTML = '';
+  if (!ok || !data.items) return;
+  data.items.forEach(promo => {
+    const div = document.createElement('div');
+    div.className = 'promo';
+    div.innerHTML = `<div><b>📣 ${promo.title}</b><p>${promo.body}</p></div><button aria-label="Cerrar">✕</button>`;
+    div.querySelector('button').onclick = () => div.remove();
+    el.appendChild(div);
+  });
+}
+
+// ═══ Notificaciones push ═══
+
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function setupPushButton(user){
+  const btn = document.getElementById('push-btn');
+  if (!user.pushConfigured || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    btn.classList.add('hidden');
+    return;
+  }
+
+  const registration = await navigator.serviceWorker.register('/sw.js').catch(() => null);
+  const existing = registration ? await registration.pushManager.getSubscription() : null;
+
+  if (existing) {
+    btn.textContent = '🔕 Desactivar notificaciones';
+    btn.onclick = async () => {
+      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: existing.endpoint }) });
+      await existing.unsubscribe();
+      setupPushButton(user);
+    };
+    return;
+  }
+
+  btn.textContent = '🔔 Activar notificaciones';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const { data } = await api('/api/push/vapid-public-key');
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(data.publicKey),
+      });
+      await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
+      await setupPushButton(user);
+    } catch {
+      alert('No pudimos activar las notificaciones. Revisa los permisos del navegador.');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+// ═══ Canje de puntos ═══
+
+const redeemModal = document.getElementById('redeem-modal');
+document.getElementById('redeem-btn').addEventListener('click', () => {
+  document.getElementById('redeem-amount').value = '';
+  document.getElementById('redeem-motivo').value = '';
+  document.getElementById('redeem-msg').className = 'msg';
+  redeemModal.classList.add('show');
+});
+document.getElementById('redeem-cancel-btn').addEventListener('click', () => redeemModal.classList.remove('show'));
+document.getElementById('redeem-confirm-btn').addEventListener('click', async () => {
+  const puntos = Number(document.getElementById('redeem-amount').value);
+  const motivo = document.getElementById('redeem-motivo').value.trim();
+  const { ok, data } = await api('/api/points/redeem', { method: 'POST', body: JSON.stringify({ puntos, motivo }) });
+  if (!ok) { setMsg('redeem-msg', 'error', data.error || 'No se pudo canjear.'); return; }
+  redeemModal.classList.remove('show');
+  await refreshUser();
+});
+
+// ═══ Grupo familiar ═══
 
 document.getElementById('family-create-btn').addEventListener('click', async () => {
   const name = document.getElementById('family-name-input').value.trim();
