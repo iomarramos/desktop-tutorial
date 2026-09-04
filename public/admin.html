@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DESENCAJADO — Panel administrador</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;700;800;900&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --yellow:#F5C200; --navy:#0D1B4B; --blue:#1E6FCC; --fuchsia:#FF0077; --bone:#F8F4EB;
+  --grad:linear-gradient(90deg,var(--fuchsia),var(--blue));
+  --fd:'Poppins',system-ui,sans-serif; --fb:'Inter',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--fb);background:var(--bone);color:var(--navy);min-height:100vh}
+
+header{display:flex;justify-content:space-between;align-items:center;padding:1.2rem 5vw;background:var(--navy)}
+.logo{display:flex;align-items:center;gap:.6rem;text-decoration:none;font-family:var(--fd);font-weight:900;font-size:1.1rem;color:#fff}
+.logo svg{width:36px;height:36px}
+.tag{color:var(--yellow);font-weight:700;font-size:.8rem}
+
+main{max-width:1100px;margin:0 auto;padding:2.4rem 5vw 5rem}
+
+.gate{max-width:420px;margin:4rem auto;background:#fff;border-radius:22px;padding:2.2rem;box-shadow:0 20px 50px -30px rgba(13,27,75,.35)}
+.gate h1{font-family:var(--fd);font-weight:900;font-size:1.4rem;margin-bottom:1rem}
+.gate input{width:100%;padding:1rem 1.2rem;border-radius:14px;border:2px solid rgba(13,27,75,.2);font-size:1rem;margin-bottom:1rem}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.85rem 1.6rem;border-radius:999px;font-family:var(--fd);font-weight:700;
+  font-size:.9rem;border:none;cursor:pointer;background:var(--grad);color:#fff}
+.btn.ghost{background:none;color:var(--navy);border:2px solid rgba(13,27,75,.2)}
+.btn.small{padding:.5rem 1rem;font-size:.8rem}
+
+.tabs{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.6rem}
+.tab-btn{padding:.7rem 1.2rem;border-radius:999px;border:2px solid rgba(13,27,75,.15);background:#fff;font-weight:700;
+  font-size:.85rem;cursor:pointer;color:var(--navy)}
+.tab-btn.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+.card{background:#fff;border-radius:20px;padding:1.8rem;box-shadow:0 20px 50px -30px rgba(13,27,75,.3);margin-bottom:1.6rem}
+h2{font-family:var(--fd);font-weight:900;font-size:1.15rem;margin-bottom:1rem}
+
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{text-align:left;padding:.55rem .5rem;border-bottom:1px solid rgba(13,27,75,.08)}
+th{font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;opacity:.6}
+.empty{opacity:.6;font-size:.9rem;padding:1rem 0}
+
+.pager{display:flex;gap:.6rem;align-items:center;justify-content:flex-end;margin-top:1rem;font-size:.85rem}
+
+.chart{display:flex;align-items:flex-end;gap:4px;height:160px;margin-top:1rem;border-bottom:2px solid rgba(13,27,75,.1);padding-bottom:2px}
+.bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.bar{width:100%;background:var(--grad);border-radius:4px 4px 0 0;min-height:2px}
+.bar-label{font-size:.62rem;margin-top:.3rem;opacity:.65;writing-mode:vertical-rl;transform:rotate(180deg);height:36px}
+.chart.weekday .bar-label{writing-mode:horizontal-tb;transform:none;height:auto}
+
+.hidden{display:none}
+.pill{display:inline-block;padding:.2rem .6rem;border-radius:999px;background:var(--bone);font-size:.72rem;font-weight:700}
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="/">
+    <svg viewBox="0 0 60 60"><circle cx="22" cy="22" r="13" fill="#1E6FCC"/><circle cx="38" cy="22" r="13" fill="#FF0077"/><circle cx="30" cy="16" r="10" fill="#1E6FCC"/><circle cx="34" cy="14" r="8" fill="#FF0077"/><rect x="17" y="20" width="12" height="9" rx="3" fill="#0D1B4B"/><rect x="31" y="20" width="12" height="9" rx="3" fill="#0D1B4B"/><path d="M14 40 L46 40 L42 56 L18 56 Z" fill="#1E6FCC" stroke="#F5C200" stroke-width="2.5"/></svg>
+    DESENCAJADO
+  </a>
+  <span class="tag">Panel administrador</span>
+</header>
+
+<main>
+
+<section id="gate" class="gate">
+  <h1>Acceso administrador</h1>
+  <input type="password" id="token-input" placeholder="Token de administrador (ADMIN_TOKEN)">
+  <button class="btn" id="token-btn">Entrar</button>
+  <p class="empty" id="gate-error"></p>
+</section>
+
+<section id="panel" class="hidden">
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="trafico">Tráfico / horarios</button>
+    <button class="tab-btn" data-tab="usuarios">Usuarios / wallet</button>
+    <button class="tab-btn" data-tab="referidos">Afiliados</button>
+    <button class="tab-btn" data-tab="familias">Compartidos</button>
+    <button class="tab-btn" data-tab="compras">Compras</button>
+    <button class="tab-btn" data-tab="suscriptores">Pre-registro</button>
+  </div>
+
+  <div id="tab-trafico" class="tab-panel">
+    <div class="card">
+      <h2>Consumo por hora del día</h2>
+      <div class="chart" id="chart-hour"></div>
+    </div>
+    <div class="card">
+      <h2>Consumo por día de la semana</h2>
+      <div class="chart weekday" id="chart-weekday"></div>
+    </div>
+  </div>
+
+  <div id="tab-usuarios" class="tab-panel hidden">
+    <div class="card">
+      <h2>Usuarios y saldo de estrellas</h2>
+      <table>
+        <thead><tr><th>Nombre</th><th>Email</th><th>Estrellas</th><th>Compras</th><th>Total gastado</th><th>2FA</th><th>Registrado</th></tr></thead>
+        <tbody id="usuarios-body"></tbody>
+      </table>
+      <p class="empty hidden" id="usuarios-empty">Sin usuarios todavía.</p>
+      <div class="pager" id="usuarios-pager"></div>
+    </div>
+  </div>
+
+  <div id="tab-referidos" class="tab-panel hidden">
+    <div class="card">
+      <h2>Usuarios afiliados / referidos</h2>
+      <table>
+        <thead><tr><th>Usuario</th><th>Referido por</th><th>Compras</th><th>Estrellas</th><th>Fecha</th></tr></thead>
+        <tbody id="referidos-body"></tbody>
+      </table>
+      <p class="empty hidden" id="referidos-empty">Sin referidos todavía.</p>
+      <div class="pager" id="referidos-pager"></div>
+    </div>
+  </div>
+
+  <div id="tab-familias" class="tab-panel hidden">
+    <div class="card">
+      <h2>Cuentas compartidas / familiares</h2>
+      <table>
+        <thead><tr><th>Grupo</th><th>Dueño</th><th>Código</th><th>Miembros</th></tr></thead>
+        <tbody id="familias-body"></tbody>
+      </table>
+      <p class="empty hidden" id="familias-empty">Sin grupos todavía.</p>
+      <div class="pager" id="familias-pager"></div>
+    </div>
+  </div>
+
+  <div id="tab-compras" class="tab-panel hidden">
+    <div class="card">
+      <h2>Compras registradas</h2>
+      <table>
+        <thead><tr><th>Fecha</th><th>Cliente</th><th>Producto</th><th>Monto</th><th>Estrellas</th></tr></thead>
+        <tbody id="compras-body"></tbody>
+      </table>
+      <p class="empty hidden" id="compras-empty">Sin compras todavía.</p>
+      <div class="pager" id="compras-pager"></div>
+    </div>
+  </div>
+
+  <div id="tab-suscriptores" class="tab-panel hidden">
+    <div class="card">
+      <h2>Suscritos a la apertura (pre-registro)</h2>
+      <table>
+        <thead><tr><th>Nombre</th><th>Teléfono</th><th>DNI</th><th>UNASAM</th><th>Fecha</th></tr></thead>
+        <tbody id="suscriptores-body"></tbody>
+      </table>
+      <p class="empty hidden" id="suscriptores-empty">Sin registros todavía.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+let ADMIN_TOKEN = sessionStorage.getItem('admin_token') || '';
+const pageState = { usuarios: 1, referidos: 1, familias: 1, compras: 1 };
+const LIMIT = 15;
+
+async function adminFetch(path){
+  const res = await fetch(path, { headers: { 'x-admin-token': ADMIN_TOKEN } });
+  if (res.status === 401) throw new Error('UNAUTHORIZED');
+  return res.json();
+}
+
+async function tryEnter(token){
+  ADMIN_TOKEN = token;
+  try {
+    await adminFetch('/api/admin/subscribers');
+    sessionStorage.setItem('admin_token', token);
+    document.getElementById('gate').classList.add('hidden');
+    document.getElementById('panel').classList.remove('hidden');
+    loadTraffic();
+    loadUsuarios();
+  } catch {
+    document.getElementById('gate-error').textContent = 'Token incorrecto.';
+    ADMIN_TOKEN = '';
+  }
+}
+
+document.getElementById('token-btn').addEventListener('click', () => {
+  const token = document.getElementById('token-input').value.trim();
+  if (token) tryEnter(token);
+});
+
+if (ADMIN_TOKEN) tryEnter(ADMIN_TOKEN);
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    document.getElementById(`tab-${btn.dataset.tab}`).classList.remove('hidden');
+    if (btn.dataset.tab === 'referidos') loadReferidos();
+    if (btn.dataset.tab === 'familias') loadFamilias();
+    if (btn.dataset.tab === 'compras') loadCompras();
+    if (btn.dataset.tab === 'suscriptores') loadSuscriptores();
+  });
+});
+
+function renderPager(id, page, total, limit, onChange){
+  const el = document.getElementById(id);
+  const totalPages = Math.max(Math.ceil(total / limit), 1);
+  el.innerHTML = '';
+  const prev = document.createElement('button');
+  prev.className = 'btn ghost small';
+  prev.textContent = '← Anterior';
+  prev.disabled = page <= 1;
+  prev.onclick = () => onChange(page - 1);
+  const info = document.createElement('span');
+  info.className = 'pill';
+  info.textContent = `Página ${page} de ${totalPages} · ${total} registros`;
+  const next = document.createElement('button');
+  next.className = 'btn ghost small';
+  next.textContent = 'Siguiente →';
+  next.disabled = page >= totalPages;
+  next.onclick = () => onChange(page + 1);
+  el.append(prev, info, next);
+}
+
+function drawChart(containerId, entries, labelKey, valueKey, formatLabel){
+  const el = document.getElementById(containerId);
+  el.innerHTML = '';
+  const max = Math.max(...entries.map(e => e[valueKey]), 1);
+  entries.forEach(e => {
+    const wrap = document.createElement('div');
+    wrap.className = 'bar-wrap';
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = `${(e[valueKey] / max) * 100}%`;
+    bar.title = `${e[valueKey]} compras`;
+    const label = document.createElement('div');
+    label.className = 'bar-label';
+    label.textContent = formatLabel ? formatLabel(e[labelKey]) : e[labelKey];
+    wrap.append(bar, label);
+    el.appendChild(wrap);
+  });
+}
+
+async function loadTraffic(){
+  const data = await adminFetch('/api/admin/stats/traffic');
+  drawChart('chart-hour', data.byHour, 'hora', 'total', h => String(h).padStart(2, '0') + 'h');
+  drawChart('chart-weekday', data.byWeekday, 'nombre', 'total', n => n.slice(0, 3));
+}
+
+async function loadUsuarios(page = pageState.usuarios){
+  pageState.usuarios = page;
+  const data = await adminFetch(`/api/admin/users?page=${page}&limit=${LIMIT}`);
+  const body = document.getElementById('usuarios-body');
+  body.innerHTML = '';
+  document.getElementById('usuarios-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${u.name}</td><td>${u.email}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
+      <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${u.created_at}</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('usuarios-pager', data.page, data.total, data.limit, loadUsuarios);
+}
+
+async function loadReferidos(page = pageState.referidos){
+  pageState.referidos = page;
+  const data = await adminFetch(`/api/admin/referrals?page=${page}&limit=${LIMIT}`);
+  const body = document.getElementById('referidos-body');
+  body.innerHTML = '';
+  document.getElementById('referidos-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.name} (${r.email})</td><td>${r.referrer_name} (${r.referrer_email})</td>
+      <td>${r.num_compras}</td><td>${r.puntos} ⭐</td><td>${r.fecha_registro}</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('referidos-pager', data.page, data.total, data.limit, loadReferidos);
+}
+
+async function loadFamilias(page = pageState.familias){
+  pageState.familias = page;
+  const data = await adminFetch(`/api/admin/family-groups?page=${page}&limit=${LIMIT}`);
+  const body = document.getElementById('familias-body');
+  body.innerHTML = '';
+  document.getElementById('familias-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(g => {
+    const tr = document.createElement('tr');
+    const members = g.members.map(m => m.name).join(', ') || '—';
+    tr.innerHTML = `<td>${g.name}</td><td>${g.owner_name}</td><td><code>${g.invite_code}</code></td><td>${members} (${g.num_miembros})</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('familias-pager', data.page, data.total, data.limit, loadFamilias);
+}
+
+async function loadCompras(page = pageState.compras){
+  pageState.compras = page;
+  const data = await adminFetch(`/api/admin/purchases?page=${page}&limit=${LIMIT}`);
+  const body = document.getElementById('compras-body');
+  body.innerHTML = '';
+  document.getElementById('compras-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.created_at}</td><td>${p.user_name} (${p.user_email})</td><td>${p.producto || '—'}</td>
+      <td>S/ ${Number(p.monto).toFixed(2)}</td><td>+${p.puntos} ⭐</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('compras-pager', data.page, data.total, data.limit, loadCompras);
+}
+
+async function loadSuscriptores(){
+  const data = await adminFetch('/api/admin/subscribers');
+  const body = document.getElementById('suscriptores-body');
+  body.innerHTML = '';
+  document.getElementById('suscriptores-empty').classList.toggle('hidden', data.subscribers.length > 0);
+  data.subscribers.forEach(s => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${s.nombre}</td><td>${s.telefono}</td><td>${s.dni}</td><td>${s.unasam}</td><td>${s.created_at}</td>`;
+    body.appendChild(tr);
+  });
+}
+</script>
+</body>
+</html>

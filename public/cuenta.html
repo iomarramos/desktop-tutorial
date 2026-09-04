@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DESENCAJADO — Mi cuenta</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;700;800;900&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --yellow:#F5C200; --navy:#0D1B4B; --blue:#1E6FCC; --fuchsia:#FF0077; --bone:#F8F4EB;
+  --grad:linear-gradient(90deg,var(--fuchsia),var(--blue));
+  --fd:'Poppins',system-ui,sans-serif; --fb:'Inter',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--fb);background:var(--bone);color:var(--navy);min-height:100vh}
+::selection{background:var(--fuchsia);color:#fff}
+
+header{display:flex;justify-content:space-between;align-items:center;padding:1.2rem 5vw;background:var(--navy)}
+.logo{display:flex;align-items:center;gap:.6rem;text-decoration:none;font-family:var(--fd);font-weight:900;
+  font-size:1.1rem;color:#fff}
+.logo svg{width:36px;height:36px}
+.tag{color:var(--yellow);font-weight:700;font-size:.8rem}
+
+main{max-width:760px;margin:0 auto;padding:3rem 5vw 5rem}
+.card{background:#fff;border-radius:22px;padding:2.2rem;box-shadow:0 20px 50px -30px rgba(13,27,75,.35);margin-bottom:1.6rem}
+.kicker{font-size:.72rem;font-weight:800;letter-spacing:.24em;color:var(--fuchsia);text-transform:uppercase}
+h1{font-family:var(--fd);font-weight:900;font-size:clamp(1.6rem,3.4vw,2.2rem);margin:.4rem 0 1rem}
+p.lead{line-height:1.7;opacity:.85;max-width:56ch}
+
+.btn{display:inline-flex;align-items:center;gap:.6rem;padding:1rem 1.8rem;border-radius:999px;font-family:var(--fd);font-weight:700;
+  font-size:.95rem;text-decoration:none;border:none;cursor:pointer;transition:.3s;background:var(--grad);color:#fff;
+  box-shadow:0 10px 26px -10px rgba(255,0,119,.55)}
+.btn:hover{transform:translateY(-3px) scale(1.02)}
+.btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+.btn.ghost{background:none;box-shadow:none;color:var(--navy);border:2px solid rgba(13,27,75,.2)}
+.btn.google{background:#fff;color:#1f1f1f;border:2px solid rgba(13,27,75,.15);box-shadow:none}
+
+.qr-box{display:flex;flex-direction:column;align-items:center;gap:1rem;margin:1.6rem 0}
+#qr-canvas{padding:.8rem;background:#fff;border-radius:16px;border:2px solid rgba(13,27,75,.12)}
+.secret{font-family:monospace;background:var(--bone);padding:.6rem 1rem;border-radius:10px;letter-spacing:.08em;font-size:.9rem;word-break:break-all}
+
+.otp-row{display:flex;gap:.8rem;margin-top:1.2rem;flex-wrap:wrap}
+input.otp{padding:1rem 1.3rem;border-radius:14px;border:2px solid rgba(13,27,75,.2);font-size:1.3rem;letter-spacing:.3em;
+  font-family:monospace;width:180px;text-align:center}
+input.otp:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 4px rgba(30,111,204,.18)}
+
+.wallet-hero{display:flex;align-items:center;gap:1.4rem;flex-wrap:wrap}
+.avatar{width:64px;height:64px;border-radius:50%;background:var(--navy)}
+.balance{background:var(--navy);color:#fff;border-radius:18px;padding:1.4rem 1.8rem;text-align:center;border-bottom:5px solid var(--yellow)}
+.balance b{display:block;font-family:var(--fd);font-size:2.2rem;font-weight:900;color:var(--yellow)}
+.balance span{font-size:.7rem;letter-spacing:.16em;font-weight:700}
+
+h2{font-family:var(--fd);font-weight:900;font-size:1.2rem;margin-bottom:.8rem}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th,td{text-align:left;padding:.6rem .4rem;border-bottom:1px solid rgba(13,27,75,.1)}
+th{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;opacity:.6}
+.empty{opacity:.6;font-size:.9rem;padding:1rem 0}
+
+.ref-box{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;background:var(--bone);border-radius:14px;padding:1rem 1.2rem}
+.ref-box code{font-weight:700;font-family:monospace}
+
+.field{display:grid;gap:.35rem;margin-bottom:.9rem}
+label{font-weight:700;font-size:.85rem}
+input[type=text]{padding:.9rem 1.2rem;border-radius:14px;border:2px solid rgba(13,27,75,.2);font-family:var(--fb);font-size:1rem}
+.msg{margin-top:1rem;border-radius:14px;padding:.9rem 1.2rem;font-weight:600;font-size:.9rem;display:none}
+.msg.show{display:block}
+.msg.ok{background:var(--navy);color:#fff;border-left:6px solid var(--yellow)}
+.msg.error{background:#fff0f6;color:var(--fuchsia);border-left:6px solid var(--fuchsia)}
+
+.hidden{display:none}
+footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align:center;font-size:.85rem}
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="/">
+    <svg viewBox="0 0 60 60"><circle cx="22" cy="22" r="13" fill="#1E6FCC"/><circle cx="38" cy="22" r="13" fill="#FF0077"/><circle cx="30" cy="16" r="10" fill="#1E6FCC"/><circle cx="34" cy="14" r="8" fill="#FF0077"/><rect x="17" y="20" width="12" height="9" rx="3" fill="#0D1B4B"/><rect x="31" y="20" width="12" height="9" rx="3" fill="#0D1B4B"/><path d="M14 40 L46 40 L42 56 L18 56 Z" fill="#1E6FCC" stroke="#F5C200" stroke-width="2.5"/></svg>
+    DESENCAJADO
+  </a>
+  <span class="tag">Mi cuenta</span>
+</header>
+
+<main>
+
+<!-- ═══ ESTADO: NO AUTENTICADO ═══ -->
+<section id="view-login" class="card hidden">
+  <span class="kicker">// Wallet DESENCAJADO</span>
+  <h1>Entra a tu cuenta</h1>
+  <p class="lead">Inicia sesión con Google para ver tus estrellas acumuladas, tu historial de consumo, tu código de referido y tu grupo familiar.</p>
+  <div style="margin-top:1.6rem">
+    <a class="btn google" id="google-btn" href="/auth/google">
+      <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.9 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.5 0 10.5-2.1 14.2-5.6l-6.6-5.6C29.6 34.7 27 35.5 24 35.5c-5.2 0-9.6-3.3-11.3-8l-6.6 5.1C9.6 39.6 16.3 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.3-4.1 5.8l6.6 5.6C41.8 35.9 44 30.4 44 24c0-1.3-.1-2.7-.4-3.5z"/></svg>
+      Continuar con Google
+    </a>
+  </div>
+</section>
+
+<!-- ═══ ESTADO: CONFIGURAR 2FA (primera vez) ═══ -->
+<section id="view-2fa-setup" class="card hidden">
+  <span class="kicker">// Paso 2 de 2</span>
+  <h1>Activa la verificación en dos pasos</h1>
+  <p class="lead">Escanea este código QR con Google Authenticator, Authy o similar. Es obligatorio para proteger tus puntos.</p>
+  <div class="qr-box">
+    <div id="qr-canvas"></div>
+    <span class="secret" id="setup-secret"></span>
+  </div>
+  <div class="field">
+    <label for="setup-code">Ingresa el código de 6 dígitos que muestra tu app</label>
+    <div class="otp-row">
+      <input class="otp" type="text" id="setup-code" inputmode="numeric" maxlength="6" placeholder="000000">
+      <button class="btn" id="setup-confirm-btn">Confirmar y activar</button>
+    </div>
+  </div>
+  <div class="msg" id="setup-msg"></div>
+</section>
+
+<!-- ═══ ESTADO: VERIFICAR 2FA (login recurrente) ═══ -->
+<section id="view-2fa-verify" class="card hidden">
+  <span class="kicker">// Verificación en dos pasos</span>
+  <h1>Hola de nuevo<span id="verify-name"></span></h1>
+  <p class="lead">Ingresa el código de 6 dígitos de tu app autenticadora para entrar a tu wallet.</p>
+  <div class="otp-row">
+    <input class="otp" type="text" id="verify-code" inputmode="numeric" maxlength="6" placeholder="000000">
+    <button class="btn" id="verify-confirm-btn">Ingresar</button>
+  </div>
+  <div class="msg" id="verify-msg"></div>
+</section>
+
+<!-- ═══ ESTADO: WALLET ACTIVA ═══ -->
+<section id="view-wallet" class="hidden">
+  <div class="card wallet-hero">
+    <img class="avatar" id="wallet-avatar" alt="">
+    <div style="flex:1;min-width:180px">
+      <span class="kicker">// Bienvenido</span>
+      <h1 id="wallet-name" style="margin:.2rem 0"></h1>
+      <p class="lead" id="wallet-email" style="opacity:.6;font-size:.85rem"></p>
+    </div>
+    <div class="balance">
+      <b id="wallet-balance">0</b>
+      <span>ESTRELLAS</span>
+    </div>
+    <button class="btn ghost" id="logout-btn">Cerrar sesión</button>
+  </div>
+
+  <div class="card">
+    <h2>Historial de consumo</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Producto</th><th>Monto</th><th>Estrellas</th></tr></thead>
+      <tbody id="purchases-body"></tbody>
+    </table>
+    <p class="empty hidden" id="purchases-empty">Aún no tienes compras registradas.</p>
+  </div>
+
+  <div class="card">
+    <h2>Comparte y gana</h2>
+    <p class="lead" style="margin-bottom:.8rem">Comparte tu enlace: tus referidos quedan vinculados a tu cuenta.</p>
+    <div class="ref-box">
+      <span>Tu código:</span> <code id="ref-code"></code>
+      <button class="btn ghost" id="copy-ref-btn" style="padding:.5rem 1rem">Copiar enlace</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Grupo familiar / compartido</h2>
+    <div id="family-current" class="hidden">
+      <p class="lead">Perteneces al grupo <b id="family-name"></b>. Código de invitación: <code id="family-invite"></code></p>
+      <ul id="family-members" style="margin-top:.8rem;padding-left:1.2rem"></ul>
+    </div>
+    <div id="family-forms">
+      <div class="field">
+        <label for="family-name-input">Crear un grupo nuevo</label>
+        <div class="otp-row">
+          <input type="text" id="family-name-input" placeholder="Ej. Familia Ramos" style="width:220px;letter-spacing:normal;font-size:1rem">
+          <button class="btn ghost" id="family-create-btn">Crear grupo</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="family-code-input">Unirme con un código de invitación</label>
+        <div class="otp-row">
+          <input type="text" id="family-code-input" placeholder="CÓDIGO" style="width:220px;letter-spacing:normal;font-size:1rem">
+          <button class="btn ghost" id="family-join-btn">Unirme</button>
+        </div>
+      </div>
+    </div>
+    <div class="msg" id="family-msg"></div>
+  </div>
+</section>
+
+</main>
+
+<footer>☕ DESENCAJADO — Papas y Café · Wallet de fidelidad · © 2026</footer>
+
+<script>
+const views = ['login', '2fa-setup', '2fa-verify', 'wallet'];
+function showView(name){
+  views.forEach(v => document.getElementById(`view-${v}`).classList.toggle('hidden', v !== name));
+}
+
+async function api(path, options = {}){
+  const res = await fetch(path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers||{}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+function setMsg(id, kind, text){
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = `msg show ${kind}`;
+}
+
+async function init(){
+  // preserva ?ref= en el botón de Google si venimos de un link compartido
+  const params = new URLSearchParams(location.search);
+  const ref = params.get('ref');
+  if (ref) {
+    document.getElementById('google-btn').href = `/auth/google?ref=${encodeURIComponent(ref)}`;
+  }
+
+  const { data } = await api('/api/me');
+
+  if (!data.stage && !data.authenticated) {
+    showView('login');
+    return;
+  }
+
+  if (data.stage === 'needs_2fa_setup') {
+    showView('2fa-setup');
+    await startTotpSetup();
+    return;
+  }
+
+  if (data.stage === 'pending_2fa') {
+    document.getElementById('verify-name').textContent = `, ${data.name.split(' ')[0]}`;
+    showView('2fa-verify');
+    return;
+  }
+
+  if (data.authenticated) {
+    renderWallet(data.user);
+    showView('wallet');
+  } else {
+    showView('login');
+  }
+}
+
+async function startTotpSetup(){
+  const { ok, data } = await api('/api/2fa/setup', { method: 'POST' });
+  if (!ok) { setMsg('setup-msg', 'error', data.error || 'No se pudo generar el QR.'); return; }
+  document.getElementById('setup-secret').textContent = data.secret;
+  document.getElementById('qr-canvas').innerHTML = '';
+  new QRCode(document.getElementById('qr-canvas'), { text: data.otpauthUrl, width: 200, height: 200 });
+}
+
+document.getElementById('setup-confirm-btn').addEventListener('click', async () => {
+  const code = document.getElementById('setup-code').value.trim();
+  const { ok, data } = await api('/api/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) });
+  if (!ok) { setMsg('setup-msg', 'error', data.error || 'Código incorrecto.'); return; }
+  renderWallet(data.user);
+  showView('wallet');
+});
+
+document.getElementById('verify-confirm-btn').addEventListener('click', async () => {
+  const code = document.getElementById('verify-code').value.trim();
+  const { ok, data } = await api('/api/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) });
+  if (!ok) { setMsg('verify-msg', 'error', data.error || 'Código incorrecto.'); return; }
+  renderWallet(data.user);
+  showView('wallet');
+});
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await api('/api/logout', { method: 'POST' });
+  location.reload();
+});
+
+function renderWallet(user){
+  document.getElementById('wallet-name').textContent = user.name;
+  document.getElementById('wallet-email').textContent = user.email;
+  document.getElementById('wallet-avatar').src = user.avatarUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>';
+  document.getElementById('wallet-balance').textContent = user.puntos;
+  document.getElementById('ref-code').textContent = user.referralCode;
+
+  document.getElementById('copy-ref-btn').onclick = () => {
+    const link = `${location.origin}/cuenta.html?ref=${user.referralCode}`;
+    navigator.clipboard.writeText(link).then(() => {
+      document.getElementById('copy-ref-btn').textContent = '¡Copiado!';
+      setTimeout(() => { document.getElementById('copy-ref-btn').textContent = 'Copiar enlace'; }, 1800);
+    });
+  };
+
+  if (user.familyGroup) {
+    document.getElementById('family-current').classList.remove('hidden');
+    document.getElementById('family-forms').classList.add('hidden');
+    document.getElementById('family-name').textContent = user.familyGroup.name;
+    document.getElementById('family-invite').textContent = user.familyGroup.invite_code;
+    const list = document.getElementById('family-members');
+    list.innerHTML = '';
+    user.familyGroup.members.forEach(m => {
+      const li = document.createElement('li');
+      li.textContent = `${m.name} (${m.email})`;
+      list.appendChild(li);
+    });
+  }
+
+  loadPurchases();
+}
+
+async function loadPurchases(){
+  const { ok, data } = await api('/api/purchases?limit=20');
+  const body = document.getElementById('purchases-body');
+  body.innerHTML = '';
+  if (!ok || !data.items || data.items.length === 0) {
+    document.getElementById('purchases-empty').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('purchases-empty').classList.add('hidden');
+  data.items.forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.created_at}</td><td>${p.producto || '—'}</td><td>S/ ${p.monto.toFixed(2)}</td><td>+${p.puntos}</td>`;
+    body.appendChild(tr);
+  });
+}
+
+document.getElementById('family-create-btn').addEventListener('click', async () => {
+  const name = document.getElementById('family-name-input').value.trim();
+  if (!name) return;
+  const { ok, data } = await api('/api/family/create', { method: 'POST', body: JSON.stringify({ name }) });
+  if (!ok) { setMsg('family-msg', 'error', data.error || 'No se pudo crear el grupo.'); return; }
+  location.reload();
+});
+
+document.getElementById('family-join-btn').addEventListener('click', async () => {
+  const inviteCode = document.getElementById('family-code-input').value.trim();
+  if (!inviteCode) return;
+  const { ok, data } = await api('/api/family/join', { method: 'POST', body: JSON.stringify({ inviteCode }) });
+  if (!ok) { setMsg('family-msg', 'error', data.error || 'Código no encontrado.'); return; }
+  location.reload();
+});
+
+init();
+</script>
+</body>
+</html>
