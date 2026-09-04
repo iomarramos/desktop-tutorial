@@ -1,0 +1,13 @@
+{
+  "name": "desencajado-suscripcion",
+  "version": "1.0.0",
+  "description": "Web de pre-registro de DESENCAJADO (Papas y Café, Huaraz) con persistencia en SQLite.",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
