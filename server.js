@@ -9,7 +9,9 @@ const {
   createSession, getSession, setSessionStage, deleteSession,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
   createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser,
-  createPromotion, listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
+  createProduct, listActiveProducts, adminListProducts, deactivateProduct,
+  createPromotion, addPromotionCode, redeemPromotionCode,
+  listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
   addPushSubscription, removePushSubscription, listAllPushSubscriptions,
   adminListUsers, adminListReferrals, adminListFamilyGroups, adminListPurchases, adminTrafficStats,
   adminAllUsers, adminAllPurchases, adminAllReferrals,
@@ -377,10 +379,40 @@ async function handleFamilyJoin(req, res) {
 
 // ───────────────────────── promociones (cliente) ─────────────────────────
 
+// Público: las promociones activas son contenido de marketing, no datos
+// privados, así que se muestran también a visitantes sin sesión en la
+// landing (/). No incluyen los códigos de canje (ver listActivePromotions).
 function handlePromotionsList(req, res) {
+  sendJson(res, 200, { ok: true, items: listActivePromotions() });
+}
+
+const PROMO_REDEEM_ERRORS = {
+  CODE_NOT_FOUND: 'Ese código no existe.',
+  PROMOTION_INACTIVE: 'Esta promoción ya no está activa.',
+  PROMOTION_NOT_STARTED: 'Esta promoción todavía no empieza.',
+  PROMOTION_EXPIRED: 'Esta promoción ya venció.',
+  CODE_EXHAUSTED: 'Este código ya alcanzó su límite de usos.',
+};
+
+async function handlePromotionRedeem(req, res) {
   const user = requireActiveUser(req);
   if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
-  sendJson(res, 200, { ok: true, items: listActivePromotions() });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.code) return sendJson(res, 400, { ok: false, error: 'Ingresa un código.' });
+
+  try {
+    const { promotion, code } = redeemPromotionCode(body.code, user.id);
+    sendJson(res, 200, { ok: true, promotion, code });
+  } catch (err) {
+    sendJson(res, 400, { ok: false, error: PROMO_REDEEM_ERRORS[err.message] || 'No se pudo canjear el código.' });
+  }
 }
 
 // ───────────────────────── notificaciones push (cliente) ─────────────────────────
@@ -567,7 +599,15 @@ async function handleAdminPromotionCreate(req, res) {
     return sendJson(res, 400, { ok: false, error: 'La promoción necesita título y texto.' });
   }
 
-  const promotion = createPromotion({ title, body: promoBody });
+  const productIds = Array.isArray(body.productIds) ? body.productIds.map(Number).filter(Boolean) : [];
+  const promotion = createPromotion({
+    title,
+    body: promoBody,
+    photoUrl: body.photoUrl || null,
+    startsAt: body.startsAt || null,
+    endsAt: body.endsAt || null,
+    productIds,
+  });
 
   let pushSent = 0;
   if (push.isConfigured()) {
@@ -597,6 +637,70 @@ async function handleAdminPromotionDeactivate(req, res) {
 
   if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
   deactivatePromotion(body.id);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminPromotionAddCode(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.promotionId) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+
+  const promotion = addPromotionCode(body.promotionId, {
+    code: body.code,
+    label: body.label,
+    maxUses: body.maxUses,
+  });
+  sendJson(res, 201, { ok: true, promotion });
+}
+
+// ───────────────────────── administrador: catálogo de productos ─────────────────────────
+
+function handleAdminProductsList(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, ...adminListProducts(paginationParams(query)) });
+}
+
+function handleAdminProductsActive(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, items: listActiveProducts() });
+}
+
+async function handleAdminProductCreate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const name = String(body.name || '').trim();
+  if (!name) return sendJson(res, 400, { ok: false, error: 'El producto necesita un nombre.' });
+
+  const product = createProduct({ name, photoUrl: body.photoUrl, price: body.price });
+  sendJson(res, 201, { ok: true, product });
+}
+
+async function handleAdminProductDeactivate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del producto.' });
+  deactivateProduct(body.id);
   sendJson(res, 200, { ok: true });
 }
 
@@ -712,6 +816,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/family/create') return handleFamilyCreate(req, res);
     if (req.method === 'POST' && url === '/api/family/join') return handleFamilyJoin(req, res);
     if (req.method === 'GET' && url === '/api/promotions') return handlePromotionsList(req, res);
+    if (req.method === 'POST' && url === '/api/promotions/redeem') return handlePromotionRedeem(req, res);
     if (req.method === 'GET' && url === '/api/wallet/google-pass') return handleGoogleWalletPass(req, res);
 
     // notificaciones push
@@ -729,6 +834,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/admin/promotions') return handleAdminPromotionsList(req, res, query);
     if (req.method === 'POST' && url === '/api/admin/promotions') return handleAdminPromotionCreate(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/deactivate') return handleAdminPromotionDeactivate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/promotions/codes') return handleAdminPromotionAddCode(req, res);
+    if (req.method === 'GET' && url === '/api/admin/products') return handleAdminProductsList(req, res, query);
+    if (req.method === 'GET' && url === '/api/admin/products/active') return handleAdminProductsActive(req, res);
+    if (req.method === 'POST' && url === '/api/admin/products') return handleAdminProductCreate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/products/deactivate') return handleAdminProductDeactivate(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/users.csv') return handleAdminExportUsers(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/purchases.csv') return handleAdminExportPurchases(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/referrals.csv') return handleAdminExportReferrals(req, res);

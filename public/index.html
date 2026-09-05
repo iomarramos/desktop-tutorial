@@ -85,6 +85,21 @@ input.invalid{border-color:var(--fuchsia)}
 @media(max-width:900px){.reg{grid-template-columns:1fr}}
 
 footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align:center;font-size:.85rem}
+
+/* ═══ POPUP de promoción ═══ */
+.modal-backdrop{position:fixed;inset:0;background:rgba(13,27,75,.6);display:none;align-items:center;justify-content:center;
+  padding:1.5rem;z-index:50}
+.modal-backdrop.show{display:flex}
+.modal-promo{background:#fff;border-radius:20px;max-width:420px;width:100%;overflow:hidden;box-shadow:0 30px 70px -20px rgba(13,27,75,.6)}
+.modal-promo img{width:100%;height:180px;object-fit:cover;display:block}
+.modal-promo .inner{padding:1.6rem}
+.modal-promo h3{font-family:var(--fd);font-weight:900;font-size:1.3rem;margin:.4rem 0}
+.modal-promo p{line-height:1.6}
+.modal-promo .vigencia{font-size:.78rem;opacity:.65;margin-top:.5rem}
+.chip{display:inline-block;padding:.15rem .6rem;border-radius:999px;background:var(--bone);font-size:.72rem;font-weight:700;margin:.3rem .3rem 0 0}
+.modal-promo .actions{display:flex;justify-content:flex-end;gap:.7rem;margin-top:1.4rem}
+.btn.ghost{background:none;color:var(--navy);border:2px solid rgba(13,27,75,.2);box-shadow:none}
+.btn.small{padding:.6rem 1.2rem;font-size:.85rem}
 </style>
 </head>
 <body>
@@ -158,6 +173,24 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 <footer>
   ☕ DESENCAJADO — Papas y Café · Pensando fuera de la caja · Apertura 29 oct 2026 · © 2026
 </footer>
+
+<!-- ═══ POPUP: promoción activa ═══ -->
+<div class="modal-backdrop" id="promo-popup">
+  <div class="modal-promo">
+    <img id="popup-photo" style="display:none">
+    <div class="inner">
+      <span class="kicker">📣 Promoción</span>
+      <h3 id="popup-title"></h3>
+      <p id="popup-body"></p>
+      <p class="vigencia" id="popup-vigencia"></p>
+      <div id="popup-chips"></div>
+      <div class="actions">
+        <button class="btn ghost small" id="popup-close-btn">Cerrar</button>
+        <a class="btn small" href="/cuenta.html" id="popup-cta-btn">Canjear en mi cuenta</a>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ═══ COUNTDOWN a apertura (29 oct 2026, 9:00 AM Perú) ═══ */
@@ -257,6 +290,53 @@ form.addEventListener('submit', async (e) => {
     submitBtn.textContent = 'Quiero mi lugar 🧠';
   }
 });
+
+/* ═══ POPUP de promoción activa ═══ */
+function seenPromoCodes(){
+  try { return JSON.parse(localStorage.getItem('desencajado_seen_promos') || '[]'); } catch { return []; }
+}
+
+function markPromoSeen(code){
+  try {
+    const seen = seenPromoCodes();
+    if (!seen.includes(code)) localStorage.setItem('desencajado_seen_promos', JSON.stringify([...seen, code]));
+  } catch { /* localStorage no disponible */ }
+}
+
+function formatVigencia(promo){
+  if (!promo.starts_at && !promo.ends_at) return '';
+  if (promo.ends_at && !promo.starts_at) return `Válido hasta ${promo.ends_at}`;
+  if (promo.starts_at && !promo.ends_at) return `Válido desde ${promo.starts_at}`;
+  return `Válido del ${promo.starts_at} al ${promo.ends_at}`;
+}
+
+async function loadPromoPopup(){
+  try{
+    const r = await fetch('/api/promotions');
+    const data = await r.json();
+    if (!data.ok || !data.items || data.items.length === 0) return;
+
+    const seen = seenPromoCodes();
+    const promo = data.items.find(p => !seen.includes(p.publication_code));
+    if (!promo) return;
+
+    const photoEl = document.getElementById('popup-photo');
+    if (promo.photo_url) { photoEl.src = promo.photo_url; photoEl.style.display = 'block'; }
+    else photoEl.style.display = 'none';
+    document.getElementById('popup-title').textContent = promo.title;
+    document.getElementById('popup-body').textContent = promo.body;
+    document.getElementById('popup-vigencia').textContent = formatVigencia(promo);
+    document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+    document.getElementById('promo-popup').classList.add('show');
+    markPromoSeen(promo.publication_code);
+  }catch{ /* sin conexión: no mostrar popup */ }
+}
+
+document.getElementById('popup-close-btn').addEventListener('click', () => {
+  document.getElementById('promo-popup').classList.remove('show');
+});
+
+loadPromoPopup();
 </script>
 </body>
 </html>

@@ -10,8 +10,10 @@ Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
    **push** de promociones.
 3. **Panel de administrador**: tráfico de consumo por horario, usuarios y su
    wallet (con buscador y exportación a CSV), afiliados, grupos compartidos,
-   registro de compras desde un formulario, y publicación de promociones
-   (banner + push).
+   registro de compras desde un formulario, **catálogo de productos** y
+   publicación de **promociones completas** (foto, vigencia, productos
+   asociados, código de publicación autogenerado y códigos de canje por
+   sucursal/tanda con límite de usos) con banner + push.
 
 Todo corre en un servidor HTTP plano (sin frameworks) con persistencia en
 SQLite.
@@ -85,8 +87,9 @@ variable de entorno `PORT`).
 - `server.js`: servidor HTTP que sirve `public/` y expone toda la API.
 - `db.js`: acceso a SQLite (`data/suscripciones.sqlite`, se crea sola y no
   se versiona en git). Tablas: `subscribers` (pre-registro), `users`,
-  `sessions`, `purchases`, `points_ledger`, `family_groups`, `promotions`,
-  `push_subscriptions`.
+  `sessions`, `purchases`, `points_ledger`, `family_groups`, `products`,
+  `promotions`, `promotion_products`, `promotion_codes`,
+  `promotion_redemptions`, `push_subscriptions`.
 - `auth/google.js`: flujo OAuth2 con Google (authorization code + verificación
   del `id_token` vía el endpoint `tokeninfo` de Google).
 - `auth/totp.js`: generación y verificación de códigos TOTP (RFC 6238) para
@@ -99,12 +102,15 @@ variable de entorno `PORT`).
 - `public/cuenta.html`: sesión del cliente — login con Google, activación de
   2FA con QR, saldo de estrellas con barra de progreso, canje de puntos,
   historial de consumo, código de referido, grupo familiar, banner de
-  promociones, activar notificaciones push y agregar a Google Wallet.
+  promociones (con foto, vigencia y productos), un campo para **canjear un
+  código de promoción**, activar notificaciones push y agregar a Google Wallet.
 - `public/admin.html`: panel de administrador (protegido por `ADMIN_TOKEN`)
   con tráfico de consumo por hora/día, usuarios y su wallet (con buscador y
   exportación CSV), referidos, grupos compartidos, compras (+ formulario
-  para registrar una nueva), promociones (crear/desactivar, con envío push)
-  y la lista de pre-registro.
+  para registrar una nueva), **catálogo de productos** (nombre, foto, precio),
+  **promociones** (título, mensaje, foto, vigencia, productos asociados,
+  código de publicación autogenerado, códigos de canje con etiqueta/límite
+  de usos, envío push) y la lista de pre-registro.
 - `public/sw.js`: service worker que muestra las notificaciones push.
 
 ## Flujo de login y 2FA
@@ -119,6 +125,38 @@ variable de entorno `PORT`).
 
 Las sesiones se guardan como tokens opacos en la tabla `sessions` (cookie
 `sid`, `HttpOnly`, `SameSite=Lax`, `Secure` cuando la conexión es HTTPS).
+
+## Modelo de promociones
+
+Cada **promoción** tiene:
+
+- Título, mensaje y una foto (URL — no hay subida de archivos, se pega el
+  link de una imagen ya alojada en algún lado, igual que la foto de perfil
+  de Google).
+- **Vigencia**: `starts_at` / `ends_at` opcionales; fuera de ese rango, o con
+  `active = 0`, deja de aparecer en `/api/promotions` y en el banner del
+  cliente.
+- **Productos o conjuntos de productos**: se asocian desde un catálogo
+  (`products`, gestionado en la pestaña *Productos* del admin) vía la tabla
+  `promotion_products`.
+- **Código de publicación** (`publication_code`, ej. `PROMO-0007`): un
+  identificador interno autogenerado para administrar/editar la promoción,
+  **no** es lo que canjea el cliente.
+- **Códigos de canje** (`promotion_codes`): uno o varios códigos que el
+  cliente sí canjea, cada uno con su propia etiqueta (ej. "Sucursal Centro",
+  "Tanda 1") y límite de usos opcional. Se agregan desde el admin dentro de
+  cada promoción. El cliente los canjea desde `/cuenta.html` con
+  `POST /api/promotions/redeem`, que valida vigencia y límite de usos y
+  registra el canje en `promotion_redemptions`. El endpoint público
+  `GET /api/promotions` **no** expone estos códigos (evita que cualquier
+  usuario con sesión vea los códigos pensados para otro canal/sucursal);
+  el cliente necesita conseguir el código por donde se distribuya (flyer,
+  redes, etc.).
+
+La promoción vigente más reciente se muestra como **popup** apenas se carga
+`/` (landing pública, sin login) o `/cuenta.html`. El popup se cierra y no
+vuelve a aparecer una vez visto (se recuerda por `publication_code` en
+`localStorage` del navegador); una promoción nueva sí se muestra de nuevo.
 
 ## API — suscripción pre-apertura
 
@@ -140,7 +178,11 @@ Las sesiones se guardan como tokens opacos en la tabla `sessions` (cookie
 - `POST /api/points/redeem` — Body `{ puntos, motivo }`. Canjea estrellas.
 - `POST /api/family/create` — Body `{ name }`. Crea grupo familiar/compartido.
 - `POST /api/family/join` — Body `{ inviteCode }`. Se une a un grupo.
-- `GET /api/promotions` — Promociones activas (para el banner de la cuenta).
+- `GET /api/promotions` — Promociones activas y vigentes (público, no
+  requiere sesión — se usa tanto en `/` como en `/cuenta.html` para mostrar
+  el popup/banner). No incluye los códigos de canje.
+- `POST /api/promotions/redeem` — Body `{ code }`. Canjea un código de
+  promoción (requiere sesión activa); valida vigencia y límite de usos.
 - `GET /api/wallet/google-pass` — Devuelve `{ saveUrl }` para el botón
   "Agregar a Google Wallet" (501 si no está configurado).
 - `GET /api/push/vapid-public-key` — Clave pública VAPID (no requiere sesión).
@@ -163,11 +205,21 @@ Las sesiones se guardan como tokens opacos en la tabla `sessions` (cookie
 - `GET /api/admin/stats/traffic` — Conteo de compras por hora del día (0-23)
   y por día de la semana, para ver horarios/tráfico pico.
 - `GET /api/admin/promotions?page=&limit=` — Promociones publicadas
-  (activas e inactivas).
-- `POST /api/admin/promotions` — Body `{ title, body }`. Publica una
-  promoción (aparece como banner en `/cuenta.html`) y la envía por push a
-  todos los dispositivos suscritos si `VAPID_*` está configurado.
+  (activas e inactivas), con sus productos y códigos de canje.
+- `POST /api/admin/promotions` — Body
+  `{ title, body, photoUrl, startsAt, endsAt, productIds }`. Publica una
+  promoción (aparece como popup/banner en `/` y `/cuenta.html`) y la envía
+  por push a todos los dispositivos suscritos si `VAPID_*` está configurado.
+  Genera automáticamente el `publication_code`.
 - `POST /api/admin/promotions/deactivate` — Body `{ id }`. Deja de mostrarla.
+- `POST /api/admin/promotions/codes` — Body
+  `{ promotionId, code, label, maxUses }`. Agrega un código de canje a la
+  promoción (si `code` viene vacío, se genera uno al azar).
+- `GET /api/admin/products?page=&limit=` — Catálogo paginado.
+- `GET /api/admin/products/active` — Catálogo activo sin paginar (para el
+  selector de productos al crear una promoción).
+- `POST /api/admin/products` — Body `{ name, photoUrl, price }`.
+- `POST /api/admin/products/deactivate` — Body `{ id }`.
 - `GET /api/admin/export/users.csv` — Exporta todos los usuarios a CSV.
 - `GET /api/admin/export/purchases.csv` — Exporta todas las compras a CSV.
 - `GET /api/admin/export/referrals.csv` — Exporta todos los referidos a CSV.

@@ -88,11 +88,15 @@ input[type=text],input[type=number]{padding:.9rem 1.2rem;border-radius:14px;bord
 .msg.error{background:#fff0f6;color:var(--fuchsia);border-left:6px solid var(--fuchsia)}
 
 .promo{background:var(--navy);color:#fff;border-radius:18px;padding:1.2rem 1.5rem;margin-bottom:1rem;
-  display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;border-left:6px solid var(--yellow);
+  display:flex;gap:1rem;align-items:flex-start;border-left:6px solid var(--yellow);
   animation:rise .4s ease both}
+.promo-photo{width:64px;height:64px;border-radius:12px;object-fit:cover;flex-shrink:0}
+.promo-body{flex:1;min-width:0}
 .promo b{font-family:var(--fd);font-size:1rem;display:block;margin-bottom:.2rem}
 .promo p{font-size:.85rem;opacity:.9;line-height:1.5}
-.promo button{background:none;border:none;color:var(--yellow);font-size:1.1rem;cursor:pointer;line-height:1}
+.promo .vigencia{font-size:.72rem;opacity:.7;margin-top:.3rem}
+.promo .chip{display:inline-block;padding:.1rem .5rem;border-radius:999px;background:rgba(255,255,255,.15);font-size:.68rem;margin:.3rem .3rem 0 0}
+.promo-close{background:none;border:none;color:var(--yellow);font-size:1.1rem;cursor:pointer;line-height:1;flex-shrink:0}
 
 .modal-backdrop{position:fixed;inset:0;background:rgba(13,27,75,.55);display:none;align-items:center;justify-content:center;
   padding:1.5rem;z-index:50}
@@ -213,6 +217,16 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
   </div>
 
   <div class="card">
+    <h2>Canjear código de promoción</h2>
+    <p class="lead" style="margin-bottom:.8rem;font-size:.85rem">¿Tienes un código de una promoción (flyer, redes, etc.)? Ingrésalo aquí y muéstrale la confirmación al staff.</p>
+    <div class="otp-row">
+      <input type="text" id="promo-code-input" placeholder="CÓDIGO" style="width:180px;letter-spacing:.05em;font-size:1rem;text-transform:uppercase">
+      <button class="btn small" id="promo-code-btn">Canjear</button>
+    </div>
+    <div class="msg" id="promo-code-msg"></div>
+  </div>
+
+  <div class="card">
     <h2>Comparte y gana</h2>
     <p class="lead" style="margin-bottom:.8rem">Comparte tu enlace: tus referidos quedan vinculados a tu cuenta.</p>
     <div class="ref-box">
@@ -250,6 +264,24 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </main>
 
 <footer>☕ DESENCAJADO — Papas y Café · Wallet de fidelidad · © 2026</footer>
+
+<!-- ═══ POPUP: promoción activa ═══ -->
+<div class="modal-backdrop" id="promo-popup">
+  <div class="modal" style="max-width:420px;padding:0;overflow:hidden">
+    <img id="popup-photo" class="hidden" style="width:100%;height:180px;object-fit:cover;display:block">
+    <div style="padding:1.6rem">
+      <span class="kicker" style="color:var(--fuchsia)">📣 PROMOCIÓN</span>
+      <h3 id="popup-title" style="margin:.4rem 0"></h3>
+      <p id="popup-body" style="line-height:1.6"></p>
+      <p id="popup-vigencia" class="empty" style="font-size:.78rem;margin-top:.5rem"></p>
+      <div id="popup-chips" style="margin-top:.5rem"></div>
+      <div class="actions" style="justify-content:space-between;margin-top:1.4rem">
+        <button class="btn ghost small" id="popup-close-btn">Cerrar</button>
+        <button class="btn small" id="popup-redeem-btn">Canjear código</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ MODAL: canjear puntos ═══ -->
 <div class="modal-backdrop" id="redeem-modal">
@@ -446,19 +478,84 @@ async function refreshUser(){
 
 // ═══ Promociones ═══
 
+function formatVigencia(promo){
+  if (!promo.starts_at && !promo.ends_at) return '';
+  if (promo.ends_at && !promo.starts_at) return `Válido hasta ${promo.ends_at}`;
+  if (promo.starts_at && !promo.ends_at) return `Válido desde ${promo.starts_at}`;
+  return `Válido del ${promo.starts_at} al ${promo.ends_at}`;
+}
+
+function seenPromoCodes(){
+  try { return JSON.parse(localStorage.getItem('desencajado_seen_promos') || '[]'); } catch { return []; }
+}
+
+function markPromoSeen(code){
+  try {
+    const seen = seenPromoCodes();
+    if (!seen.includes(code)) localStorage.setItem('desencajado_seen_promos', JSON.stringify([...seen, code]));
+  } catch { /* localStorage no disponible (modo privado, etc.) */ }
+}
+
+function showPromoPopup(promo){
+  const photoEl = document.getElementById('popup-photo');
+  if (promo.photo_url) { photoEl.src = promo.photo_url; photoEl.classList.remove('hidden'); }
+  else photoEl.classList.add('hidden');
+  document.getElementById('popup-title').textContent = promo.title;
+  document.getElementById('popup-body').textContent = promo.body;
+  document.getElementById('popup-vigencia').textContent = formatVigencia(promo);
+  document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+  document.getElementById('promo-popup').classList.add('show');
+  markPromoSeen(promo.publication_code);
+}
+
 async function loadPromotions(){
   const { ok, data } = await api('/api/promotions');
   const el = document.getElementById('promo-banner');
   el.innerHTML = '';
   if (!ok || !data.items) return;
+
   data.items.forEach(promo => {
     const div = document.createElement('div');
     div.className = 'promo';
-    div.innerHTML = `<div><b>📣 ${promo.title}</b><p>${promo.body}</p></div><button aria-label="Cerrar">✕</button>`;
-    div.querySelector('button').onclick = () => div.remove();
+    const photo = promo.photo_url ? `<img class="promo-photo" src="${promo.photo_url}" alt="">` : '';
+    const vigencia = formatVigencia(promo);
+    const chips = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+    div.innerHTML = `${photo}<div class="promo-body">
+        <b>📣 ${promo.title}</b>
+        <p>${promo.body}</p>
+        ${vigencia ? `<p class="vigencia">${vigencia}</p>` : ''}
+        <div>${chips}</div>
+      </div><button class="promo-close" aria-label="Cerrar">✕</button>`;
+    div.querySelector('.promo-close').onclick = () => div.remove();
     el.appendChild(div);
   });
+
+  // Popup: solo la más reciente, y solo si no se le mostró ya en este navegador.
+  const seen = seenPromoCodes();
+  const unseen = data.items.find(p => !seen.includes(p.publication_code));
+  if (unseen) showPromoPopup(unseen);
 }
+
+document.getElementById('popup-close-btn').addEventListener('click', () => {
+  document.getElementById('promo-popup').classList.remove('show');
+});
+document.getElementById('popup-redeem-btn').addEventListener('click', () => {
+  document.getElementById('promo-popup').classList.remove('show');
+  document.getElementById('promo-code-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('promo-code-input').focus();
+});
+
+// ═══ Canje de código de promoción ═══
+
+document.getElementById('promo-code-btn').addEventListener('click', async () => {
+  const code = document.getElementById('promo-code-input').value.trim();
+  if (!code) return;
+  const { ok, data } = await api('/api/promotions/redeem', { method: 'POST', body: JSON.stringify({ code }) });
+  if (!ok) { setMsg('promo-code-msg', 'error', data.error || 'No se pudo canjear.'); return; }
+  const extra = data.code && data.code.usesRemaining != null ? ` (quedan ${data.code.usesRemaining} usos de este código)` : '';
+  setMsg('promo-code-msg', 'ok', `✅ ¡Código válido! ${data.promotion.title}: ${data.promotion.body}${extra}. Muéstrale esto al staff.`);
+  document.getElementById('promo-code-input').value = '';
+});
 
 // ═══ Notificaciones push ═══
 

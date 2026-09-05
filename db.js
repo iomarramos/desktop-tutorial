@@ -101,10 +101,68 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    photo_url TEXT,
+    price REAL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS promotion_products (
+    promotion_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    PRIMARY KEY (promotion_id, product_id)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS promotion_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id INTEGER NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    label TEXT,
+    max_uses INTEGER,
+    uses_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS promotion_redemptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_code_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+// Migración in-place: agrega columnas nuevas a `promotions` si la base de
+// datos ya existía de una versión anterior (SQLite no soporta
+// "ADD COLUMN IF NOT EXISTS").
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn('promotions', 'photo_url', 'TEXT');
+ensureColumn('promotions', 'starts_at', 'TEXT');
+ensureColumn('promotions', 'ends_at', 'TEXT');
+ensureColumn('promotions', 'publication_code', 'TEXT');
+
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_promo_products_promo ON promotion_products(promotion_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_promo_codes_promo ON promotion_codes(promotion_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_promo_redemptions_code ON promotion_redemptions(promotion_code_id)');
 
 const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process.env.SOLES_PER_PUNTO) : 5;
 const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
@@ -339,14 +397,56 @@ function getFamilyGroupForUser(userId) {
   return { ...group, members: listFamilyMembersStmt.all(group.id) };
 }
 
+// ───────────────────────── catálogo de productos ─────────────────────────
+
+const insertProductStmt = db.prepare(
+  'INSERT INTO products (name, photo_url, price) VALUES (?, ?, ?)'
+);
+const getProductByIdStmt = db.prepare('SELECT * FROM products WHERE id = ?');
+const listActiveProductsStmt = db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY name');
+const adminListProductsStmt = db.prepare('SELECT * FROM products ORDER BY id DESC LIMIT ? OFFSET ?');
+const adminProductsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM products');
+const deactivateProductStmt = db.prepare('UPDATE products SET active = 0 WHERE id = ?');
+
+function createProduct({ name, photoUrl, price }) {
+  const info = insertProductStmt.run(name, photoUrl || null, price != null && price !== '' ? Number(price) : null);
+  return getProductByIdStmt.get(info.lastInsertRowid);
+}
+
+function getProductById(id) {
+  return getProductByIdStmt.get(id);
+}
+
+function listActiveProducts() {
+  return listActiveProductsStmt.all();
+}
+
+function adminListProducts({ limit = 20, page = 1 } = {}) {
+  const p = paginate({ limit, page });
+  return {
+    items: adminListProductsStmt.all(p.limit, p.offset),
+    total: adminProductsCountStmt.get().total,
+    page: p.page,
+    limit: p.limit,
+  };
+}
+
+function deactivateProduct(id) {
+  deactivateProductStmt.run(id);
+}
+
 // ───────────────────────── promociones ─────────────────────────
 
 const insertPromotionStmt = db.prepare(
-  'INSERT INTO promotions (title, body) VALUES (?, ?)'
+  'INSERT INTO promotions (title, body, photo_url, starts_at, ends_at, publication_code) VALUES (?, ?, ?, ?, ?, ?)'
 );
 const getPromotionByIdStmt = db.prepare('SELECT * FROM promotions WHERE id = ?');
-const listActivePromotionsStmt = db.prepare(
-  'SELECT id, title, body, created_at FROM promotions WHERE active = 1 ORDER BY id DESC LIMIT 5'
+const listActivePromotionsRawStmt = db.prepare(
+  `SELECT * FROM promotions
+   WHERE active = 1
+     AND (starts_at IS NULL OR starts_at <= datetime('now'))
+     AND (ends_at IS NULL OR ends_at >= datetime('now'))
+   ORDER BY id DESC LIMIT 5`
 );
 const adminListPromotionsStmt = db.prepare(
   'SELECT * FROM promotions ORDER BY id DESC LIMIT ? OFFSET ?'
@@ -355,19 +455,97 @@ const adminPromotionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM promo
 const deactivatePromotionStmt = db.prepare('UPDATE promotions SET active = 0 WHERE id = ?');
 const markPromotionPushedStmt = db.prepare('UPDATE promotions SET pushed_to = ? WHERE id = ?');
 
-function createPromotion({ title, body }) {
-  const info = insertPromotionStmt.run(title, body);
-  return getPromotionByIdStmt.get(info.lastInsertRowid);
+const insertPromotionProductStmt = db.prepare(
+  'INSERT OR IGNORE INTO promotion_products (promotion_id, product_id) VALUES (?, ?)'
+);
+const listPromotionProductsStmt = db.prepare(
+  `SELECT pr.* FROM promotion_products pp
+   JOIN products pr ON pr.id = pp.product_id
+   WHERE pp.promotion_id = ?
+   ORDER BY pr.name`
+);
+
+const insertPromotionCodeStmt = db.prepare(
+  'INSERT INTO promotion_codes (promotion_id, code, label, max_uses) VALUES (?, ?, ?, ?)'
+);
+const listPromotionCodesStmt = db.prepare(
+  'SELECT * FROM promotion_codes WHERE promotion_id = ? ORDER BY id'
+);
+const getPromotionCodeByCodeStmt = db.prepare('SELECT * FROM promotion_codes WHERE code = ?');
+const incrementPromotionCodeUsesStmt = db.prepare(
+  'UPDATE promotion_codes SET uses_count = uses_count + 1 WHERE id = ?'
+);
+const insertPromotionRedemptionStmt = db.prepare(
+  'INSERT INTO promotion_redemptions (promotion_code_id, user_id) VALUES (?, ?)'
+);
+
+function generatePublicationCode(promotionId) {
+  return `PROMO-${String(promotionId).padStart(4, '0')}`;
+}
+
+// Uso interno/admin: incluye los códigos de canje (uso interno del staff).
+function hydratePromotion(promotion) {
+  if (!promotion) return promotion;
+  return {
+    ...promotion,
+    products: listPromotionProductsStmt.all(promotion.id),
+    codes: listPromotionCodesStmt.all(promotion.id),
+  };
+}
+
+// Uso público (cliente): NO expone los códigos de canje — el cliente debe
+// obtenerlos por el canal donde se distribuya la promo (flyer, redes, etc.)
+// y canjearlos a mano; listarlos aquí los filtraría a cualquiera con sesión.
+function hydratePromotionPublic(promotion) {
+  if (!promotion) return promotion;
+  return { ...promotion, products: listPromotionProductsStmt.all(promotion.id) };
+}
+
+function createPromotion({ title, body, photoUrl, startsAt, endsAt, productIds = [] }) {
+  const info = insertPromotionStmt.run(title, body, photoUrl || null, startsAt || null, endsAt || null, null);
+  const id = info.lastInsertRowid;
+  db.prepare('UPDATE promotions SET publication_code = ? WHERE id = ?').run(generatePublicationCode(id), id);
+  for (const productId of productIds) {
+    insertPromotionProductStmt.run(id, productId);
+  }
+  return hydratePromotion(getPromotionByIdStmt.get(id));
+}
+
+function addPromotionCode(promotionId, { code, label, maxUses }) {
+  const cleanCode = String(code || '').trim().toUpperCase() || randomCode(8);
+  insertPromotionCodeStmt.run(promotionId, cleanCode, label || null, maxUses ? Number(maxUses) : null);
+  return hydratePromotion(getPromotionByIdStmt.get(promotionId));
+}
+
+function redeemPromotionCode(code, userId) {
+  const promoCode = getPromotionCodeByCodeStmt.get(String(code || '').trim().toUpperCase());
+  if (!promoCode) throw new Error('CODE_NOT_FOUND');
+
+  const promotion = getPromotionByIdStmt.get(promoCode.promotion_id);
+  if (!promotion || !promotion.active) throw new Error('PROMOTION_INACTIVE');
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) throw new Error('PROMOTION_NOT_STARTED');
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) throw new Error('PROMOTION_EXPIRED');
+  if (promoCode.max_uses != null && promoCode.uses_count >= promoCode.max_uses) throw new Error('CODE_EXHAUSTED');
+
+  incrementPromotionCodeUsesStmt.run(promoCode.id);
+  insertPromotionRedemptionStmt.run(promoCode.id, userId);
+  // Solo se devuelve el código canjeado, no el resto de códigos de la
+  // promoción (podrían ser de otra sucursal/tanda y no le corresponden a este cliente).
+  return {
+    promotion: hydratePromotionPublic(promotion),
+    code: { label: promoCode.label, usesRemaining: promoCode.max_uses != null ? promoCode.max_uses - (promoCode.uses_count + 1) : null },
+  };
 }
 
 function listActivePromotions() {
-  return listActivePromotionsStmt.all();
+  return listActivePromotionsRawStmt.all().map(hydratePromotionPublic);
 }
 
 function adminListPromotions({ limit = 20, page = 1 } = {}) {
   const p = paginate({ limit, page });
   return {
-    items: adminListPromotionsStmt.all(p.limit, p.offset),
+    items: adminListPromotionsStmt.all(p.limit, p.offset).map(hydratePromotion),
     total: adminPromotionsCountStmt.get().total,
     page: p.page,
     limit: p.limit,
@@ -638,8 +816,16 @@ module.exports = {
   createFamilyGroup,
   joinFamilyGroup,
   getFamilyGroupForUser,
+  // productos
+  createProduct,
+  getProductById,
+  listActiveProducts,
+  adminListProducts,
+  deactivateProduct,
   // promociones
   createPromotion,
+  addPromotionCode,
+  redeemPromotionCode,
   listActivePromotions,
   adminListPromotions,
   deactivatePromotion,
