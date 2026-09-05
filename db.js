@@ -161,6 +161,13 @@ ensureColumn('sessions', 'totp_attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sessions', 'totp_locked_until', 'TEXT');
 ensureColumn('users', 'wallet_saved_at', 'TEXT');
 ensureColumn('users', 'last_spin_at', 'TEXT');
+ensureColumn('users', 'dni', 'TEXT');
+ensureColumn('users', 'telefono', 'TEXT');
+
+// Único entre quienes ya lo llenaron: SQLite no deja agregar UNIQUE en un
+// ALTER TABLE ADD COLUMN, así que va como índice parcial aparte. Permite
+// múltiples NULL (usuarios que aún no completaron su perfil).
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_dni ON users(dni) WHERE dni IS NOT NULL');
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
@@ -232,6 +239,7 @@ const insertUserStmt = db.prepare(
 const updateUserProfileStmt = db.prepare(
   'UPDATE users SET name = ?, avatar_url = ? WHERE id = ?'
 );
+const setUserContactStmt = db.prepare('UPDATE users SET dni = ?, telefono = ? WHERE id = ?');
 const setReferredByStmt = db.prepare('UPDATE users SET referred_by = ? WHERE id = ? AND referred_by IS NULL');
 const deleteAllSessionsForUserStmt = db.prepare('DELETE FROM sessions WHERE user_id = ?');
 const setTotpSecretStmt = db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?');
@@ -266,6 +274,21 @@ function getUserByEmail(email) {
 
 function getUserByReferralCode(code) {
   return getUserByReferralCodeStmt.get(code);
+}
+
+// Vincula DNI y teléfono a la cuenta de wallet del cliente (Google no los
+// entrega en el login — se piden aparte, ver server.js: /api/profile/complete).
+// Es la base para poder cruzar más adelante con fecha de nacimiento y mandar
+// promociones dirigidas (ej. cumpleaños) por WhatsApp/SMS.
+function setUserContactInfo(userId, dni, telefono) {
+  try {
+    setUserContactStmt.run(dni, telefono, userId);
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE constraint failed')) {
+      throw new Error('DNI_TAKEN');
+    }
+    throw err;
+  }
 }
 
 // Marca que el usuario abrió el link "Guardar en Google Wallet" — es la
@@ -846,6 +869,7 @@ function countPushSubscriptions() {
 
 const adminUsersStmt = db.prepare(
   `SELECT u.id, u.name, u.email, u.avatar_url, u.totp_enabled, u.created_at,
+          u.dni, u.telefono,
           u.referred_by, u.family_group_id,
           COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos,
           COALESCE((SELECT SUM(monto) FROM purchases p WHERE p.user_id = u.id), 0) AS total_gastado,
@@ -869,6 +893,7 @@ function adminListUsers({ limit = 20, page = 1, q } = {}) {
   const search = `%${q}%`;
   const stmt = db.prepare(`
     SELECT u.id, u.name, u.email, u.avatar_url, u.totp_enabled, u.created_at,
+           u.dni, u.telefono,
            u.referred_by, u.family_group_id,
            COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos,
            COALESCE((SELECT SUM(monto) FROM purchases p WHERE p.user_id = u.id), 0) AS total_gastado,
@@ -1048,6 +1073,7 @@ module.exports = {
   getUserByEmail,
   getUserByReferralCode,
   setReferredBy,
+  setUserContactInfo,
   setTotpSecret,
   enableTotp,
   markWalletSaved,

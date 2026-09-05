@@ -260,3 +260,24 @@ test('ruleta: la primera vez está disponible, otorga un premio válido y aplica
 
   assert.throws(() => db.spinWheel(user.id), /SPIN_COOLDOWN/);
 });
+
+// ───────────────────────── perfil: DNI y teléfono ─────────────────────────
+
+test('perfil: setUserContactInfo vincula dni y teléfono al usuario', () => {
+  const user = makeUser('Con perfil');
+  assert.equal(db.getUserById(user.id).dni, null);
+
+  db.setUserContactInfo(user.id, '12345678', '987654321');
+
+  const updated = db.getUserById(user.id);
+  assert.equal(updated.dni, '12345678');
+  assert.equal(updated.telefono, '987654321');
+});
+
+test('perfil: un DNI ya vinculado a otro usuario lanza DNI_TAKEN', () => {
+  const ana = makeUser('Ana perfil');
+  const luis = makeUser('Luis perfil');
+  db.setUserContactInfo(ana.id, '11111111', '911111111');
+
+  assert.throws(() => db.setUserContactInfo(luis.id, '11111111', '922222222'), /DNI_TAKEN/);
+});

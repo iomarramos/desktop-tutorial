@@ -159,7 +159,7 @@ textarea{resize:vertical;min-height:70px}
         </div>
       </div>
       <table>
-        <thead><tr><th>Nombre</th><th>Email</th><th>Estrellas</th><th>Compras</th><th>Total gastado</th><th>2FA</th><th>Registrado</th><th></th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Email</th><th>DNI</th><th>Celular</th><th>Estrellas</th><th>Compras</th><th>Total gastado</th><th>2FA</th><th>Registrado</th><th></th></tr></thead>
         <tbody id="usuarios-body"></tbody>
       </table>
       <p class="empty hidden" id="usuarios-empty">Sin usuarios todavía.</p>
@@ -453,7 +453,7 @@ async function loadUsuarios(page = pageState.usuarios){
   document.getElementById('usuarios-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(u => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${u.name}</td><td>${u.email}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
+    tr.innerHTML = `<td>${u.name}</td><td>${u.email}</td><td>${u.dni || '—'}</td><td>${u.telefono || '—'}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
       <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${u.created_at}</td><td></td>`;
     const actionTd = tr.lastElementChild;
     const btn = document.createElement('button');

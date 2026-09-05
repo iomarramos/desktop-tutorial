@@ -3,7 +3,10 @@
 Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
 
 1. **Pre-registro** para la apertura (nombre, teléfono, DNI) — igual que antes.
-2. **Wallet de fidelidad**: login con Google, verificación en dos pasos (2FA)
+2. **Wallet de fidelidad**: login con Google + **vinculación de DNI y
+   celular** (paso obligatorio único, ya que Google no los entrega —
+   sienta la base para futuras campañas segmentadas, ej. por cumpleaños),
+   verificación en dos pasos (2FA)
    por código QR (con bloqueo tras varios intentos fallidos), estrellas por
    consumo canjeables más adelante (con barra de progreso hacia la próxima
    recompensa), código de referidos **con bono de puntos** para quien refiere
@@ -192,7 +195,11 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `POST /api/logout`
 - `GET /api/me` — Estado de la sesión (`authenticated`, `stage`, perfil,
   incluye `tier` — nivel de fidelidad — y `spinStatus` — disponibilidad de
-  la ruleta de premios).
+  la ruleta de premios). `stage: 'needs_profile'` significa que falta
+  vincular DNI/celular — se pide antes que el 2FA, una sola vez.
+- `POST /api/profile/complete` — Body `{ dni, telefono }`. Vincula DNI
+  (8 dígitos) y celular peruano (9 dígitos, empieza con 9) a la cuenta.
+  409 si el DNI ya está vinculado a otro usuario.
 - `POST /api/2fa/setup` — Genera el secreto TOTP y la URL `otpauth://` para
   el QR (solo en primer login).
 - `POST /api/2fa/verify` — Body `{ code }`. Confirma el 2FA (setup o login).
@@ -376,7 +383,14 @@ Opciones evaluadas para cuando se decida implementarlo:
 | **Twilio (WhatsApp Business API)** | De pago desde el primer mensaje | Setup más simple, todo vía API key de Twilio | Útil si se quiere probar rápido sin pasar por la verificación de Meta |
 | **Link `wa.me` manual** | Gratis | Ninguno | No es envío masivo automático: cada promo generaría un link `wa.me/<numero>?text=...` que el negocio comparte a mano (ej. en un estado de WhatsApp) |
 
-Para implementarlo se necesitaría además: guardar el número de teléfono del
-cliente con opt-in explícito (ya existe `telefono` en `subscribers`, pero no
-en `users` — el login con Google no lo pide), y una tabla de plantillas de
-mensaje aprobadas si se usa Cloud API.
+**Actualización**: el teléfono ya está vinculado a `users` (ver "Paso 1 de 2"
+del onboarding, arriba) — el prerequisito de datos para esto ya no falta.
+Sigue pendiente: elegir proveedor (tabla arriba) y, antes de mandar cualquier
+campaña, agregar un **opt-in explícito de marketing** (una casilla en el
+formulario de perfil tipo "Acepto recibir promociones por WhatsApp/SMS") —
+al tratarse ahora de datos identificados (DNI + celular, no un registro
+anónimo), conviene pedir consentimiento explícito para ese uso antes de
+enviar nada, en línea con la Ley de Protección de Datos Personales (Ley
+29733). Lo mismo aplica el día que se pida fecha de nacimiento para la
+promo de cumpleaños: pedirla junto con su propio opt-in, no reusar el
+consentimiento de WhatsApp para otro fin.

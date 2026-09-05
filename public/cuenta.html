@@ -150,6 +150,23 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
   </div>
 </section>
 
+<!-- ═══ ESTADO: COMPLETAR PERFIL (primera vez) ═══ -->
+<section id="view-profile-complete" class="card hidden">
+  <span class="kicker">// Paso 1 de 2</span>
+  <h1>Completa tu perfil<span id="profile-name"></span></h1>
+  <p class="lead">Necesitamos tu DNI y celular para vincular tu wallet — así podemos avisarte de promociones y, más adelante, sorprenderte en tu cumpleaños.</p>
+  <div class="field">
+    <label for="profile-dni">DNI</label>
+    <input type="text" id="profile-dni" inputmode="numeric" maxlength="8" placeholder="12345678">
+  </div>
+  <div class="field">
+    <label for="profile-telefono">Celular</label>
+    <input type="text" id="profile-telefono" inputmode="numeric" maxlength="9" placeholder="987654321">
+  </div>
+  <button class="btn" id="profile-confirm-btn">Continuar</button>
+  <div class="msg" id="profile-msg"></div>
+</section>
+
 <!-- ═══ ESTADO: CONFIGURAR 2FA (primera vez) ═══ -->
 <section id="view-2fa-setup" class="card hidden">
   <span class="kicker">// Paso 2 de 2</span>
@@ -328,7 +345,7 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </div>
 
 <script>
-const views = ['login', '2fa-setup', '2fa-verify', 'wallet'];
+const views = ['login', 'profile-complete', '2fa-setup', '2fa-verify', 'wallet'];
 function showView(name){
   document.getElementById('loading').classList.add('hidden');
   views.forEach(v => document.getElementById(`view-${v}`).classList.toggle('hidden', v !== name));
@@ -360,6 +377,12 @@ async function init(){
 
   const { data } = await api('/api/me');
 
+  if (data.stage === 'needs_profile') {
+    document.getElementById('profile-name').textContent = data.name ? `, ${data.name.split(' ')[0]}` : '';
+    showView('profile-complete');
+    return;
+  }
+
   if (data.stage === 'needs_2fa_setup') {
     showView('2fa-setup');
     await startTotpSetup();
@@ -380,6 +403,20 @@ async function init(){
     showView('login');
   }
 }
+
+document.getElementById('profile-confirm-btn').addEventListener('click', async () => {
+  const dni = document.getElementById('profile-dni').value.trim();
+  const telefono = document.getElementById('profile-telefono').value.trim();
+  const { ok, data } = await api('/api/profile/complete', { method: 'POST', body: JSON.stringify({ dni, telefono }) });
+  if (!ok) {
+    const firstError = data.errors ? Object.values(data.errors)[0] : null;
+    setMsg('profile-msg', 'error', firstError || data.error || 'No se pudo guardar tu perfil.');
+    return;
+  }
+  document.getElementById('loading').classList.remove('hidden');
+  views.forEach(v => document.getElementById(`view-${v}`).classList.add('hidden'));
+  await init();
+});
 
 async function startTotpSetup(){
   const { ok, data } = await api('/api/2fa/setup', { method: 'POST' });

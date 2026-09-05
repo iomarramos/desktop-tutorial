@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const {
   addSubscriber, dniExists, getCount, listSubscribers,
   upsertGoogleUser, getUserById, getUserByEmail, getUserByReferralCode, setReferredBy,
-  setTotpSecret, enableTotp, markWalletSaved, listWalletSavedUserIds,
+  setUserContactInfo, setTotpSecret, enableTotp, markWalletSaved, listWalletSavedUserIds,
   createSession, getSession, setSessionStage, deleteSession, deleteAllSessionsForUser,
   isTotpLocked, registerTotpFailure, resetTotpAttempts, TOTP_LOCKOUT_MINUTES,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
@@ -107,6 +107,22 @@ function validateSubscription({ nombre, telefono, dni, unasam }) {
     errors,
     value: { nombre: cleanNombre, telefono: cleanTelefono, dni: cleanDni, unasam: cleanUnasam },
   };
+}
+
+function validateContactInfo({ dni, telefono }) {
+  const errors = {};
+
+  const cleanDni = String(dni || '').trim();
+  if (!/^\d{8}$/.test(cleanDni)) {
+    errors.dni = 'El DNI debe tener exactamente 8 dígitos.';
+  }
+
+  const cleanTelefono = normalizePhone(telefono);
+  if (!/^9\d{8}$/.test(cleanTelefono)) {
+    errors.telefono = 'Ingresa un celular peruano válido (9 dígitos, empieza con 9).';
+  }
+
+  return { errors, value: { dni: cleanDni, telefono: cleanTelefono } };
 }
 
 // El primer IP de X-Forwarded-For (si hay un proxy/reverse-proxy delante,
@@ -213,6 +229,17 @@ async function handleMe(req, res) {
   const user = getUserById(found.session.user_id);
   if (!user) return sendJson(res, 200, { authenticated: false });
 
+  // El perfil (DNI/teléfono) se pide antes que el 2FA: Google no los entrega
+  // en el login, así que hay que completarlos aparte una sola vez.
+  if (!user.dni || !user.telefono) {
+    return sendJson(res, 200, {
+      authenticated: false,
+      stage: 'needs_profile',
+      name: user.name,
+      email: user.email,
+    });
+  }
+
   if (found.session.stage !== 'active') {
     return sendJson(res, 200, {
       authenticated: false,
@@ -223,6 +250,37 @@ async function handleMe(req, res) {
   }
 
   sendJson(res, 200, { authenticated: true, stage: 'active', user: serializeUser(user) });
+}
+
+async function handleProfileComplete(req, res) {
+  if (rateLimited(req, res, 'profile-complete', { max: 10, windowMs: 10 * 60_000 })) return;
+  const found = getSessionFromRequest(req);
+  if (!found) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+  const user = getUserById(found.session.user_id);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const { errors, value } = validateContactInfo(body);
+  if (Object.keys(errors).length > 0) {
+    return sendJson(res, 400, { ok: false, errors });
+  }
+
+  try {
+    setUserContactInfo(user.id, value.dni, value.telefono);
+  } catch (err) {
+    if (err.message === 'DNI_TAKEN') {
+      return sendJson(res, 409, { ok: false, error: 'Ese DNI ya está vinculado a otra cuenta.' });
+    }
+    throw err;
+  }
+
+  sendJson(res, 200, { ok: true });
 }
 
 // ───────────────────────── auth Google + 2FA ─────────────────────────
@@ -986,6 +1044,8 @@ function handleAdminExportUsers(req, res) {
   const csv = toCsv(adminAllUsers(), [
     { key: 'name', label: 'Nombre' },
     { key: 'email', label: 'Email' },
+    { key: 'dni', label: 'DNI' },
+    { key: 'telefono', label: 'Celular' },
     { key: 'puntos', label: 'Estrellas' },
     { key: 'num_compras', label: 'Compras' },
     { key: 'total_gastado', label: 'Total gastado' },
@@ -1064,6 +1124,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/logout') return handleLogout(req, res);
     if (req.method === 'POST' && url === '/api/logout-all') return handleLogoutAll(req, res);
     if (req.method === 'GET' && url === '/api/me') return handleMe(req, res);
+    if (req.method === 'POST' && url === '/api/profile/complete') return handleProfileComplete(req, res);
     if (req.method === 'POST' && url === '/api/2fa/setup') return handleTotpSetup(req, res);
     if (req.method === 'POST' && url === '/api/2fa/verify') return handleTotpVerify(req, res);
 
