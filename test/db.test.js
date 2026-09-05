@@ -151,6 +151,40 @@ test('promociones: no se puede borrar una promoción con canjes', () => {
   assert.throws(() => db.deletePromotion(promo.id), /PROMOTION_HAS_REDEMPTIONS/);
 });
 
+// ───────────────────────── programación de promociones ─────────────────────────
+
+test('promociones: sin fecha o con fecha pasada están listas para activar de inmediato', () => {
+  const inmediata = db.createPromotion({ title: 'Sched inmediata', body: 'x' });
+  const ayer = db.createPromotion({
+    title: 'Sched ayer',
+    body: 'x',
+    startsAt: new Date(Date.now() - 86400000).toISOString().slice(0, 16),
+  });
+
+  const listas = db.listPromotionsReadyToActivate().map((p) => p.id);
+  assert.ok(listas.includes(inmediata.id));
+  assert.ok(listas.includes(ayer.id));
+});
+
+test('promociones: una fecha futura NO está lista para activar hasta que llegue el día', () => {
+  const manana = db.createPromotion({
+    title: 'Sched mañana',
+    body: 'x',
+    startsAt: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
+  });
+
+  const listas = db.listPromotionsReadyToActivate().map((p) => p.id);
+  assert.ok(!listas.includes(manana.id));
+});
+
+test('promociones: markPromotionActivated saca a la promoción de la lista de pendientes', () => {
+  const promo = db.createPromotion({ title: 'Sched a activar', body: 'x' });
+  assert.ok(db.listPromotionsReadyToActivate().some((p) => p.id === promo.id));
+
+  db.markPromotionActivated(promo.id);
+  assert.ok(!db.listPromotionsReadyToActivate().some((p) => p.id === promo.id));
+});
+
 // ───────────────────────── puntos / recompensas ─────────────────────────
 
 test('compras: calcula estrellas según SOLES_PER_PUNTO y actualiza el balance', () => {

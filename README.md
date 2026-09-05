@@ -20,10 +20,13 @@ Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
    wallet (con buscador y exportación a CSV, y botón para forzar el cierre
    de sesión de un cliente), afiliados, grupos compartidos, registro de
    compras desde un formulario, **catálogo de productos** (crear/editar/
-   desactivar/eliminar), **promociones completas** (foto, vigencia,
-   productos asociados, código de publicación autogenerado, códigos de
-   canje por sucursal/tanda con límite de usos, editar/desactivar/eliminar)
-   con banner + popup + push, y **campos de perfil dinámicos**: crear en
+   desactivar/eliminar), **promociones completas y programables** (foto,
+   vigencia, productos asociados, código de publicación autogenerado,
+   códigos de canje por sucursal/tanda con límite de usos, editar/
+   desactivar/eliminar) con banner + popup + push — si se les pone una
+   fecha de inicio futura quedan guardadas sin avisarle a nadie hasta que
+   llegue el día (por día, no por hora todavía), y **campos de perfil
+   dinámicos**: crear en
    cualquier momento un dato nuevo a pedirle al cliente (ej. fecha de
    nacimiento, un número de referencia) sin tocar código — si se marca
    obligatorio, se le pide la próxima vez que entra a su cuenta.
@@ -117,14 +120,16 @@ variable de entorno `PORT`).
   cifrado VAPID/aes128gcm).
 - `auth/googleWallet.js`: construye y firma (RS256) el JWT "Save to Google
   Wallet" con la tarjeta de fidelidad del cliente, y además llama a la
-  **Wallet REST API** (con un access token de service account) para dos
+  **Wallet REST API** (con un access token de service account) para tres
   cosas más: actualizar el saldo de estrellas en el pase que el cliente ya
   guardó (cada vez que compra, canjea puntos o gana un referido — no hace
-  falta que vuelva a la web para ver el saldo nuevo), y empujarle un mensaje
-  al pase guardado cuando se publica una promoción nueva (aparece como
+  falta que vuelva a la web para ver el saldo nuevo), empujarle un mensaje
+  al pase guardado cuando se activa una promoción (aparece como
   notificación dentro de la propia app de Google Wallet, además del push
-  del navegador). Todo esto es mejor esfuerzo: si el cliente nunca guardó
-  el pase, la API responde 404 y simplemente se ignora.
+  del navegador), y actualizar la **imagen grande (heroImage)** del pase
+  con la foto de la promo activa, si tiene una. Todo esto es mejor
+  esfuerzo: si el cliente nunca guardó el pase, la API responde 404 y
+  simplemente se ignora.
 - `public/index.html`: formulario de pre-registro.
 - `public/cuenta.html`: sesión del cliente — login con Google, activación de
   2FA con QR, saldo de estrellas con barra de progreso, canje de puntos,
@@ -259,10 +264,13 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `GET /api/admin/promotions?page=&limit=` — Promociones publicadas
   (activas e inactivas), con sus productos y códigos de canje.
 - `POST /api/admin/promotions` — Body
-  `{ title, body, photoUrl, startsAt, endsAt, productIds }`. Publica una
-  promoción (aparece como popup/banner en `/` y `/cuenta.html`) y la envía
-  por push a todos los dispositivos suscritos si `VAPID_*` está configurado.
-  Genera automáticamente el `publication_code`.
+  `{ title, body, photoUrl, startsAt, endsAt, productIds }`. Crea una
+  promoción (aparece como popup/banner en `/` y `/cuenta.html` según su
+  vigencia) y genera el `publication_code`. Si `startsAt` es hoy/pasado o
+  viene vacío, la envía por push (navegador + Google Wallet) de inmediato;
+  si es una fecha futura, queda **programada** (`scheduled: true` en la
+  respuesta) y el push se dispara solo cuando llegue el día — ver
+  "Promociones programadas" abajo.
 - `POST /api/admin/promotions/deactivate` — Body `{ id }`. Deja de mostrarla.
 - `POST /api/admin/promotions/update` — Body
   `{ id, title, body, photoUrl, startsAt, endsAt, productIds }` (todos
@@ -423,6 +431,35 @@ nacimiento (y cualquier otro dato futuro) sin escribir código — ver
 desde el admin cuando se decida activarlo, y el propio envío de la promo de
 cumpleaños (hoy nada lee `user_profile_values` para mandar nada — el dato
 se recolecta pero aún no dispara ninguna campaña automática).
+
+## Promociones programadas
+
+Una promoción se puede crear hoy con una fecha de inicio futura para que
+quede lista y se publique sola más adelante:
+
+- Si `startsAt` es hoy o ya pasó (o se deja vacío), se activa **de
+  inmediato**: se manda el push del navegador y el mensaje + imagen a
+  Google Wallet en el momento de crearla, igual que antes.
+- Si `startsAt` es una fecha futura, la promoción queda guardada
+  (`scheduled: true` en la respuesta del admin) sin avisarle a nadie
+  todavía. El popup/banner tampoco la muestra hasta esa fecha (esto ya
+  existía). La columna `activated_at` queda en `NULL` mientras espera.
+- Un scheduler interno (`runPromotionScheduler` en `server.js`) revisa las
+  promociones pendientes **una vez al arrancar el servidor y luego una vez
+  al día** — la programación es por **día**, no por hora todavía (no tiene
+  sentido revisar más seguido si la granularidad es diaria). Apenas
+  encuentra una cuya fecha ya llegó, dispara el mismo push que se manda al
+  crear una inmediata (`activatePromotion`, compartida por los dos casos)
+  y marca `activated_at`.
+- Editar/desactivar una promoción programada no la reactiva ni la
+  vuelve a enviar — `activated_at` solo se pisa una vez.
+- Migración: las promociones que ya existían antes de este cambio se
+  backfillean con `activated_at = created_at` la primera vez que arranca
+  el servidor con la columna nueva, para que el scheduler no les vuelva a
+  mandar push a todo el mundo por error.
+
+Panel admin: cada promoción muestra si está "📅 Programada — se enviará
+el `<fecha>`" o "✅ Enviada el `<fecha>`".
 
 ## Campos de perfil dinámicos
 

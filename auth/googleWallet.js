@@ -110,6 +110,31 @@ async function pushLoyaltyMessage(userId, { header, body }) {
   }
 }
 
+// Actualiza la imagen grande (heroImage) del pase ya guardado — más
+// visual que el mensaje de texto de pushLoyaltyMessage, útil para que la
+// foto de la promo activa aparezca directamente en la tarjeta guardada.
+async function patchHeroImage(userId, { imageUrl, description }) {
+  if (!configured) return { ok: false, skipped: true };
+  try {
+    const token = await getAccessToken();
+    const res = await fetch(`${WALLET_API_BASE}/loyaltyObject/${objectIdFor(userId)}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        heroImage: {
+          sourceUri: { uri: imageUrl },
+          contentDescription: { defaultValue: { language: 'es', value: description || 'Promoción' } },
+        },
+      }),
+    });
+    if (res.status === 404) return { ok: false, notFound: true };
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // Construye el JWT "Save to Google Wallet" (RFC 7519, firmado RS256) con la
 // clase y el objeto de fidelidad embebidos: Google los crea/actualiza al
 // abrir el link, sin necesidad de llamar antes a la Wallet REST API.
@@ -163,4 +188,4 @@ function buildSaveUrl({ user, points }) {
   return `https://pay.google.com/gp/v/save/${signingInput}.${signature}`;
 }
 
-module.exports = { isConfigured, buildSaveUrl, patchLoyaltyPoints, pushLoyaltyMessage };
+module.exports = { isConfigured, buildSaveUrl, patchLoyaltyPoints, pushLoyaltyMessage, patchHeroImage };

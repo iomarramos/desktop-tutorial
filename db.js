@@ -171,17 +171,28 @@ db.exec(`
 // Migración in-place: agrega columnas nuevas a `promotions` si la base de
 // datos ya existía de una versión anterior (SQLite no soporta
 // "ADD COLUMN IF NOT EXISTS").
+// Devuelve true si la columna no existía y hubo que agregarla — para
+// migraciones que además necesitan un backfill único (ver activated_at).
 function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!columns.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+  if (columns.some((c) => c.name === column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  return true;
 }
 
 ensureColumn('promotions', 'photo_url', 'TEXT');
 ensureColumn('promotions', 'starts_at', 'TEXT');
 ensureColumn('promotions', 'ends_at', 'TEXT');
 ensureColumn('promotions', 'publication_code', 'TEXT');
+if (ensureColumn('promotions', 'activated_at', 'TEXT')) {
+  // Las promociones que ya existían antes de este cambio se consideran ya
+  // activadas (con su fecha de creación como referencia) — si no, el
+  // scheduler las agarraría como "pendientes" y les volvería a mandar push
+  // a todo el mundo la primera vez que arranque el servidor con la columna
+  // nueva. En una base recién creada esta tabla está vacía, así que no
+  // afecta a nadie.
+  db.exec('UPDATE promotions SET activated_at = created_at WHERE activated_at IS NULL');
+}
 ensureColumn('sessions', 'totp_attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sessions', 'totp_locked_until', 'TEXT');
 ensureColumn('users', 'wallet_saved_at', 'TEXT');
@@ -800,6 +811,15 @@ const adminListPromotionsStmt = db.prepare(
 const adminPromotionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM promotions');
 const deactivatePromotionStmt = db.prepare('UPDATE promotions SET active = 0 WHERE id = ?');
 const markPromotionPushedStmt = db.prepare('UPDATE promotions SET pushed_to = ? WHERE id = ?');
+// Programación por día (no por hora todavía): date() normaliza tanto el
+// formato "YYYY-MM-DD HH:MM:SS" de SQLite como el "YYYY-MM-DDTHH:MM" que
+// manda el <input type="datetime-local">, así que compara solo el día.
+const listPromotionsReadyToActivateStmt = db.prepare(
+  `SELECT * FROM promotions
+   WHERE active = 1 AND activated_at IS NULL
+     AND (starts_at IS NULL OR date(starts_at) <= date('now'))`
+);
+const markPromotionActivatedStmt = db.prepare("UPDATE promotions SET activated_at = datetime('now') WHERE id = ?");
 
 const insertPromotionProductStmt = db.prepare(
   'INSERT OR IGNORE INTO promotion_products (promotion_id, product_id) VALUES (?, ?)'
@@ -904,6 +924,16 @@ function deactivatePromotion(id) {
 
 function markPromotionPushed(id, count) {
   markPromotionPushedStmt.run(count, id);
+}
+
+// Promociones activas, con fecha de inicio ya cumplida (o sin fecha = ya
+// mismo) que todavía no se activaron — para el scheduler.
+function listPromotionsReadyToActivate() {
+  return listPromotionsReadyToActivateStmt.all().map(hydratePromotion);
+}
+
+function markPromotionActivated(id) {
+  markPromotionActivatedStmt.run(id);
 }
 
 const updatePromotionStmt = db.prepare(
@@ -1252,6 +1282,8 @@ module.exports = {
   adminListPromotions,
   deactivatePromotion,
   markPromotionPushed,
+  listPromotionsReadyToActivate,
+  markPromotionActivated,
   updatePromotion,
   deletePromotion,
   // push

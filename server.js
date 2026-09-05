@@ -16,6 +16,7 @@ const {
   updateProfileField, deleteProfileField, getUserProfileValues, getMissingRequiredFields, setUserProfileValues,
   createPromotion, addPromotionCode, redeemPromotionCode,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
+  listPromotionsReadyToActivate, markPromotionActivated,
   updatePromotion, deletePromotion,
   addPushSubscription, removePushSubscription, listAllPushSubscriptions,
   adminListUsers, adminListReferrals, adminListFamilyGroups, adminListPurchases, adminTrafficStats,
@@ -811,6 +812,63 @@ function handleAdminPromotionsList(req, res, query) {
   sendJson(res, 200, { ok: true, pushConfigured: push.isConfigured(), ...adminListPromotions(paginationParams(query)) });
 }
 
+// Envía el push (navegador + Google Wallet) de una promoción y la marca
+// como activada. La llama handleAdminPromotionCreate cuando la vigencia ya
+// empezó, y runPromotionScheduler cuando le toca a una programada para
+// más adelante — misma lógica en los dos casos, un solo lugar.
+async function activatePromotion(promotion) {
+  const { id, title, body: promoBody, photo_url: photoUrl } = promotion;
+
+  let pushSent = 0;
+  if (push.isConfigured()) {
+    const subs = listAllPushSubscriptions();
+    const results = await Promise.all(
+      subs.map((sub) => push.sendToSubscription(sub, { title, body: promoBody }))
+    );
+    results.forEach((result, i) => {
+      if (result.ok) pushSent += 1;
+      else if (result.gone) removePushSubscription(subs[i].endpoint);
+    });
+    markPromotionPushed(id, pushSent);
+  }
+
+  let walletPushSent = 0;
+  if (googleWallet.isConfigured()) {
+    const userIds = listWalletSavedUserIds();
+    const results = await Promise.all(
+      userIds.map((userId) => googleWallet.pushLoyaltyMessage(userId, { header: title, body: promoBody }))
+    );
+    walletPushSent = results.filter((r) => r.ok).length;
+
+    if (photoUrl) {
+      await Promise.all(
+        userIds.map((userId) => googleWallet.patchHeroImage(userId, { imageUrl: photoUrl, description: title }))
+      );
+    }
+  }
+
+  markPromotionActivated(id);
+  return { pushSent, walletPushSent };
+}
+
+// Programación por día: si starts_at todavía no llegó, la promoción queda
+// guardada pero sin avisarle a nadie hasta que runPromotionScheduler la
+// recoja (ver el arranque del servidor, más abajo).
+function isReadyToActivate(promotion) {
+  if (!promotion.starts_at) return true;
+  return String(promotion.starts_at).slice(0, 10) <= new Date().toISOString().slice(0, 10);
+}
+
+async function runPromotionScheduler() {
+  for (const promotion of listPromotionsReadyToActivate()) {
+    try {
+      await activatePromotion(promotion);
+    } catch (err) {
+      console.error(`Error activando la promoción programada #${promotion.id}:`, err);
+    }
+  }
+}
+
 async function handleAdminPromotionCreate(req, res) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
 
@@ -838,28 +896,13 @@ async function handleAdminPromotionCreate(req, res) {
   });
 
   let pushSent = 0;
-  if (push.isConfigured()) {
-    const subs = listAllPushSubscriptions();
-    const results = await Promise.all(
-      subs.map((sub) => push.sendToSubscription(sub, { title, body: promoBody }))
-    );
-    results.forEach((result, i) => {
-      if (result.ok) pushSent += 1;
-      else if (result.gone) removePushSubscription(subs[i].endpoint);
-    });
-    markPromotionPushed(promotion.id, pushSent);
-  }
-
   let walletPushSent = 0;
-  if (googleWallet.isConfigured()) {
-    const userIds = listWalletSavedUserIds();
-    const results = await Promise.all(
-      userIds.map((userId) => googleWallet.pushLoyaltyMessage(userId, { header: title, body: promoBody }))
-    );
-    walletPushSent = results.filter((r) => r.ok).length;
+  const scheduled = !isReadyToActivate(promotion);
+  if (!scheduled) {
+    ({ pushSent, walletPushSent } = await activatePromotion(promotion));
   }
 
-  sendJson(res, 201, { ok: true, promotion, pushSent, walletPushSent });
+  sendJson(res, 201, { ok: true, promotion, pushSent, walletPushSent, scheduled });
 }
 
 async function handleAdminPromotionDeactivate(req, res) {
@@ -1302,3 +1345,13 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`DESENCAJADO suscripción escuchando en http://localhost:${PORT}`);
 });
+
+// Revisa promociones programadas: una vez al levantar el servidor (para no
+// esperar hasta 24h si algo quedó listo mientras estaba apagado) y luego
+// una vez al día — la programación es por día, no por hora, así que no
+// hace falta revisar más seguido.
+runPromotionScheduler().catch((err) => console.error('Error en el scheduler de promociones:', err));
+const promotionSchedulerTimer = setInterval(() => {
+  runPromotionScheduler().catch((err) => console.error('Error en el scheduler de promociones:', err));
+}, 24 * 3600_000);
+promotionSchedulerTimer.unref();
