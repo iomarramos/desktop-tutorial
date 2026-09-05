@@ -36,6 +36,8 @@ p.lead{line-height:1.7;opacity:.85;max-width:56ch}
   box-shadow:0 10px 26px -10px rgba(255,0,119,.55)}
 .btn:hover{transform:translateY(-3px) scale(1.02)}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.spinning{animation:spinbtn .7s linear}
+@keyframes spinbtn{to{transform:rotate(360deg)}}
 .btn.ghost{background:none;box-shadow:none;color:var(--navy);border:2px solid rgba(13,27,75,.2)}
 .btn.google{background:#fff;color:#1f1f1f;border:2px solid rgba(13,27,75,.15);box-shadow:none}
 .btn.small{padding:.55rem 1.1rem;font-size:.8rem}
@@ -59,6 +61,13 @@ input.otp:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 4px rgba(
 .balance{background:var(--navy);color:#fff;border-radius:18px;padding:1.4rem 1.8rem;text-align:center;border-bottom:5px solid var(--yellow)}
 .balance b{display:block;font-family:var(--fd);font-size:2.2rem;font-weight:900;color:var(--yellow)}
 .balance span{font-size:.7rem;letter-spacing:.16em;font-weight:700}
+
+.tier-badge{display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .9rem;border-radius:999px;font-family:var(--fd);
+  font-weight:800;font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;margin-top:.5rem}
+.tier-badge.bronce{background:#F0DCC4;color:#7A4A1E}
+.tier-badge.plata{background:#E4E7EC;color:#43505E}
+.tier-badge.oro{background:#FCE8A8;color:#7A5B00}
+.tier-caption{font-size:.78rem;opacity:.65;margin-top:.3rem}
 
 .actions-row{display:flex;gap:.7rem;flex-wrap:wrap;margin-top:1.4rem}
 
@@ -187,6 +196,7 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
     <div class="balance">
       <b id="wallet-balance">0</b>
       <span>ESTRELLAS</span>
+      <div id="tier-badge" class="tier-badge"></div>
     </div>
     <div class="actions-row">
       <button class="btn small" id="redeem-btn">Canjear puntos</button>
@@ -206,6 +216,16 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
     <div class="progress-track"><div class="progress-fill" id="reward-fill" style="width:0%"></div></div>
     <div class="progress-caption"><span id="reward-current">0</span><span id="reward-target"></span></div>
     <div class="reward-ready" id="reward-ready"></div>
+  </div>
+
+  <div class="card">
+    <h2>🎡 Ruleta de premios</h2>
+    <p class="lead" style="font-size:.85rem;margin-bottom:1rem">Gira una vez al día y gana estrellas extra al instante.</p>
+    <div style="display:flex;align-items:center;gap:1.2rem;flex-wrap:wrap">
+      <button class="btn" id="spin-btn">Girar la ruleta 🎡</button>
+      <span id="spin-caption" class="empty" style="padding:0"></span>
+    </div>
+    <div class="msg" id="spin-msg"></div>
   </div>
 
   <div class="card">
@@ -409,6 +429,8 @@ function renderWallet(user){
   document.getElementById('ref-code').textContent = user.referralCode;
 
   renderReward(user.reward);
+  renderTier(user.tier);
+  renderSpin(user.spinStatus);
 
   document.getElementById('copy-ref-btn').onclick = () => {
     const link = `${location.origin}/cuenta.html?ref=${user.referralCode}`;
@@ -477,6 +499,63 @@ function renderReward(reward){
   }
 }
 
+const TIER_LABELS = { bronce: '🥉 Bronce', plata: '🥈 Plata', oro: '🥇 Oro' };
+
+function renderTier(tier){
+  const badge = document.getElementById('tier-badge');
+  badge.className = `tier-badge ${tier.tier}`;
+  badge.textContent = TIER_LABELS[tier.tier] || tier.tier;
+  badge.title = tier.nextTier
+    ? `Te faltan ${tier.pointsToNext} estrellas ganadas para nivel ${TIER_LABELS[tier.nextTier]}`
+    : '¡Nivel máximo!';
+}
+
+// ═══ Ruleta de premios ═══
+
+let spinCooldownTimer = null;
+
+function renderSpin(status){
+  const btn = document.getElementById('spin-btn');
+  const caption = document.getElementById('spin-caption');
+  if (spinCooldownTimer) clearInterval(spinCooldownTimer);
+
+  function tick(){
+    const remainingMs = status.nextSpinAt ? new Date(status.nextSpinAt).getTime() - Date.now() : 0;
+    if (status.available || remainingMs <= 0) {
+      btn.disabled = false;
+      caption.textContent = '¡Disponible ahora!';
+      if (spinCooldownTimer) clearInterval(spinCooldownTimer);
+      return;
+    }
+    btn.disabled = true;
+    const mins = Math.floor(remainingMs / 60000);
+    caption.textContent = `Vuelve a girar en ${Math.floor(mins / 60)}h ${mins % 60}m`;
+  }
+
+  tick();
+  if (!status.available) spinCooldownTimer = setInterval(tick, 30_000);
+}
+
+document.getElementById('spin-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('spin-btn');
+  btn.disabled = true;
+  btn.classList.add('spinning');
+  const { ok, data } = await api('/api/wallet/spin', { method: 'POST' });
+  setTimeout(() => btn.classList.remove('spinning'), 700);
+
+  if (!ok) {
+    setMsg('spin-msg', 'error', data.error || 'No se pudo girar la ruleta.');
+    if (data.nextSpinAt !== undefined) renderSpin(data);
+    return;
+  }
+
+  setMsg('spin-msg', 'ok', data.prize.points > 0
+    ? `🎉 ¡Ganaste ${data.prize.points} estrellas!`
+    : `Esta vez no hubo suerte: "${data.prize.label}". ¡Vuelve mañana!`);
+  document.getElementById('wallet-balance').textContent = data.balance;
+  renderSpin(data.spinStatus);
+});
+
 async function loadPurchases(){
   const { ok, data } = await api('/api/purchases?limit=20');
   const body = document.getElementById('purchases-body');
@@ -510,6 +589,27 @@ function formatVigencia(promo){
   return `Válido del ${promo.starts_at} al ${promo.ends_at}`;
 }
 
+function formatCountdown(endsAt){
+  if (!endsAt) return '';
+  const end = new Date(endsAt);
+  if (Number.isNaN(end.getTime())) return '';
+  const diffMs = end.getTime() - Date.now();
+  if (diffMs <= 0) return '';
+  const mins = Math.floor(diffMs / 60000);
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  if (days > 0) return `⏳ Termina en ${days}d ${hours}h`;
+  if (hours > 0) return `⏳ Termina en ${hours}h ${mins % 60}m`;
+  return `⏳ Termina en ${mins % 60}m`;
+}
+
+function updateCountdowns(){
+  document.querySelectorAll('.countdown[data-ends]').forEach(el => {
+    el.textContent = formatCountdown(el.dataset.ends);
+  });
+}
+setInterval(updateCountdowns, 60_000);
+
 function seenPromoCodes(){
   try { return JSON.parse(localStorage.getItem('desencajado_seen_promos') || '[]'); } catch { return []; }
 }
@@ -527,7 +627,7 @@ function showPromoPopup(promo){
   else photoEl.classList.add('hidden');
   document.getElementById('popup-title').textContent = promo.title;
   document.getElementById('popup-body').textContent = promo.body;
-  document.getElementById('popup-vigencia').textContent = formatVigencia(promo);
+  document.getElementById('popup-vigencia').textContent = [formatVigencia(promo), formatCountdown(promo.ends_at)].filter(Boolean).join(' · ');
   document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
   document.getElementById('promo-popup').classList.add('show');
   markPromoSeen(promo.publication_code);
@@ -549,11 +649,13 @@ async function loadPromotions(){
         <b>📣 ${promo.title}</b>
         <p>${promo.body}</p>
         ${vigencia ? `<p class="vigencia">${vigencia}</p>` : ''}
+        ${promo.ends_at ? `<p class="vigencia countdown" data-ends="${promo.ends_at}"></p>` : ''}
         <div>${chips}</div>
       </div><button class="promo-close" aria-label="Cerrar">✕</button>`;
     div.querySelector('.promo-close').onclick = () => div.remove();
     el.appendChild(div);
   });
+  updateCountdowns();
 
   // Popup: solo la más reciente, y solo si no se le mostró ya en este navegador.
   const seen = seenPromoCodes();

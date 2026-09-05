@@ -9,7 +9,10 @@ Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
    recompensa), código de referidos **con bono de puntos** para quien refiere
    y para el referido, cuentas familiares/compartidas (crear, unirse, salir,
    expulsar miembros), tarjeta real de **Google Wallet**, notificaciones
-   **push** de promociones, y cierre de sesión en todos los dispositivos.
+   **push** de promociones (con cuenta regresiva cuando la promo tiene fecha
+   de vencimiento), **niveles de fidelidad** (Bronce/Plata/Oro según
+   estrellas ganadas de por vida), una **ruleta de premios** diaria con
+   cooldown, y cierre de sesión en todos los dispositivos.
 3. **Panel de administrador**: tráfico de consumo por horario, usuarios y su
    wallet (con buscador y exportación a CSV, y botón para forzar el cierre
    de sesión de un cliente), afiliados, grupos compartidos, registro de
@@ -187,12 +190,19 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
   referido).
 - `GET /auth/google/callback` — Callback OAuth.
 - `POST /api/logout`
-- `GET /api/me` — Estado de la sesión (`authenticated`, `stage`, perfil).
+- `GET /api/me` — Estado de la sesión (`authenticated`, `stage`, perfil,
+  incluye `tier` — nivel de fidelidad — y `spinStatus` — disponibilidad de
+  la ruleta de premios).
 - `POST /api/2fa/setup` — Genera el secreto TOTP y la URL `otpauth://` para
   el QR (solo en primer login).
 - `POST /api/2fa/verify` — Body `{ code }`. Confirma el 2FA (setup o login).
 - `GET /api/purchases?page=&limit=` — Historial de consumo propio, paginado.
 - `POST /api/points/redeem` — Body `{ puntos, motivo }`. Canjea estrellas.
+- `GET /api/wallet/spin` — Estado de la ruleta de premios (`available`,
+  `nextSpinAt`, `cooldownHours`).
+- `POST /api/wallet/spin` — Gira la ruleta (1 vez cada `SPIN_COOLDOWN_HOURS`,
+  default 24h; 429 si aún no toca). Otorga un premio ponderado al azar
+  (0 a 50 estrellas) y devuelve `{ prize, balance, spinStatus }`.
 - `POST /api/family/create` — Body `{ name }`. Crea grupo familiar/compartido.
 - `POST /api/family/join` — Body `{ inviteCode }`. Se une a un grupo.
 - `POST /api/family/leave` — Sale del grupo. Si el que sale es el dueño, el

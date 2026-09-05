@@ -9,6 +9,7 @@ const {
   createSession, getSession, setSessionStage, deleteSession, deleteAllSessionsForUser,
   isTotpLocked, registerTotpFailure, resetTotpAttempts, TOTP_LOCKOUT_MINUTES,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
+  getTierForUser, spinWheel, getSpinStatus,
   createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser, leaveFamilyGroup, removeFamilyMember,
   createProduct, listActiveProducts, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
   createPromotion, addPromotionCode, redeemPromotionCode,
@@ -194,6 +195,8 @@ function serializeUser(user) {
     avatarUrl: user.avatar_url,
     puntos: reward.balance,
     reward,
+    tier: getTierForUser(user.id),
+    spinStatus: getSpinStatus(user.id),
     referralCode: user.referral_code,
     totpEnabled: Boolean(user.totp_enabled),
     familyGroup: family,
@@ -389,6 +392,31 @@ async function handlePointsRedeem(req, res) {
       ? 'No tienes suficientes puntos para este canje.'
       : 'Cantidad de puntos inválida.';
     sendJson(res, 400, { ok: false, error: msg });
+  }
+}
+
+// ───────────────────────── ruleta de premios ─────────────────────────
+
+function handleSpinStatus(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+  sendJson(res, 200, { ok: true, ...getSpinStatus(user.id) });
+}
+
+function handleSpinPlay(req, res) {
+  if (rateLimited(req, res, 'wallet-spin', { max: 10, windowMs: 5 * 60_000 })) return;
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  try {
+    const result = spinWheel(user.id);
+    syncWalletPoints(user.id);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    if (err.message === 'SPIN_COOLDOWN') {
+      return sendJson(res, 429, { ok: false, error: 'Todavía no puedes girar de nuevo.', ...getSpinStatus(user.id) });
+    }
+    sendJson(res, 500, { ok: false, error: 'No se pudo girar la ruleta.' });
   }
 }
 
@@ -1042,6 +1070,8 @@ const server = http.createServer(async (req, res) => {
     // wallet del usuario
     if (req.method === 'GET' && url === '/api/purchases') return handlePurchasesList(req, res, query);
     if (req.method === 'POST' && url === '/api/points/redeem') return handlePointsRedeem(req, res);
+    if (req.method === 'GET' && url === '/api/wallet/spin') return handleSpinStatus(req, res);
+    if (req.method === 'POST' && url === '/api/wallet/spin') return handleSpinPlay(req, res);
     if (req.method === 'POST' && url === '/api/family/create') return handleFamilyCreate(req, res);
     if (req.method === 'POST' && url === '/api/family/join') return handleFamilyJoin(req, res);
     if (req.method === 'POST' && url === '/api/family/leave') return handleFamilyLeave(req, res);

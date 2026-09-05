@@ -160,6 +160,7 @@ ensureColumn('promotions', 'publication_code', 'TEXT');
 ensureColumn('sessions', 'totp_attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sessions', 'totp_locked_until', 'TEXT');
 ensureColumn('users', 'wallet_saved_at', 'TEXT');
+ensureColumn('users', 'last_spin_at', 'TEXT');
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
@@ -175,6 +176,9 @@ const REFERRAL_BONUS_POINTS = Number(process.env.REFERRAL_BONUS_POINTS) >= 0 ? N
 const REFERRAL_WELCOME_POINTS = Number(process.env.REFERRAL_WELCOME_POINTS) >= 0 ? Number(process.env.REFERRAL_WELCOME_POINTS) : 10;
 const TOTP_MAX_ATTEMPTS = Number(process.env.TOTP_MAX_ATTEMPTS) > 0 ? Number(process.env.TOTP_MAX_ATTEMPTS) : 5;
 const TOTP_LOCKOUT_MINUTES = Number(process.env.TOTP_LOCKOUT_MINUTES) > 0 ? Number(process.env.TOTP_LOCKOUT_MINUTES) : 5;
+const TIER_SILVER_THRESHOLD = Number(process.env.TIER_SILVER_THRESHOLD) >= 0 ? Number(process.env.TIER_SILVER_THRESHOLD) : 100;
+const TIER_GOLD_THRESHOLD = Number(process.env.TIER_GOLD_THRESHOLD) >= 0 ? Number(process.env.TIER_GOLD_THRESHOLD) : 300;
+const SPIN_COOLDOWN_HOURS = Number(process.env.SPIN_COOLDOWN_HOURS) > 0 ? Number(process.env.SPIN_COOLDOWN_HOURS) : 24;
 
 // ───────────────────────── suscripciones (pre-apertura) ─────────────────────────
 
@@ -235,6 +239,7 @@ const enableTotpStmt = db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = 
 const setFamilyGroupStmt = db.prepare('UPDATE users SET family_group_id = ? WHERE id = ?');
 const markWalletSavedStmt = db.prepare("UPDATE users SET wallet_saved_at = datetime('now') WHERE id = ?");
 const listWalletSavedUserIdsStmt = db.prepare('SELECT id FROM users WHERE wallet_saved_at IS NOT NULL');
+const setLastSpinStmt = db.prepare("UPDATE users SET last_spin_at = datetime('now') WHERE id = ?");
 
 function upsertGoogleUser({ googleId, email, name, avatarUrl }) {
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -424,6 +429,92 @@ function getRewardProgress(userId) {
     progressPct: Math.round((inCycle / REWARD_THRESHOLD) * 100),
     rewardsAvailable: Math.floor(balance / REWARD_THRESHOLD),
   };
+}
+
+// ───────────────────────── niveles de fidelidad ─────────────────────────
+//
+// A diferencia del saldo canjeable (getPointsBalance, que baja al redimir),
+// el nivel se calcula sobre los puntos ganados de por vida: canjear premios
+// no debería hacerte "bajar de nivel".
+
+const lifetimePointsStmt = db.prepare(
+  'SELECT COALESCE(SUM(delta), 0) AS total FROM points_ledger WHERE user_id = ? AND delta > 0'
+);
+
+function getLifetimePoints(userId) {
+  return lifetimePointsStmt.get(userId).total;
+}
+
+function tierForPoints(lifetimePoints) {
+  if (lifetimePoints >= TIER_GOLD_THRESHOLD) {
+    return { tier: 'oro', lifetimePoints, nextTier: null, pointsToNext: 0 };
+  }
+  if (lifetimePoints >= TIER_SILVER_THRESHOLD) {
+    return {
+      tier: 'plata',
+      lifetimePoints,
+      nextTier: 'oro',
+      pointsToNext: TIER_GOLD_THRESHOLD - lifetimePoints,
+    };
+  }
+  return {
+    tier: 'bronce',
+    lifetimePoints,
+    nextTier: 'plata',
+    pointsToNext: TIER_SILVER_THRESHOLD - lifetimePoints,
+  };
+}
+
+function getTierForUser(userId) {
+  return tierForPoints(getLifetimePoints(userId));
+}
+
+// ───────────────────────── ruleta de premios ─────────────────────────
+
+const SPIN_PRIZES = [
+  { label: 'Sigue participando', points: 0, weight: 10 },
+  { label: '+5 estrellas', points: 5, weight: 40 },
+  { label: '+10 estrellas', points: 10, weight: 30 },
+  { label: '+20 estrellas', points: 20, weight: 15 },
+  { label: '+50 estrellas', points: 50, weight: 5 },
+];
+const SPIN_WEIGHT_TOTAL = SPIN_PRIZES.reduce((sum, p) => sum + p.weight, 0);
+
+function pickSpinPrize() {
+  let roll = Math.random() * SPIN_WEIGHT_TOTAL;
+  for (const prize of SPIN_PRIZES) {
+    if (roll < prize.weight) return prize;
+    roll -= prize.weight;
+  }
+  return SPIN_PRIZES[SPIN_PRIZES.length - 1];
+}
+
+function nextSpinAt(user) {
+  if (!user.last_spin_at) return null;
+  return new Date(sqliteUtcToDate(user.last_spin_at).getTime() + SPIN_COOLDOWN_HOURS * 3600_000);
+}
+
+function getSpinStatus(userId) {
+  const next = nextSpinAt(getUserByIdStmt.get(userId));
+  const available = !next || next <= new Date();
+  return {
+    available,
+    nextSpinAt: available ? null : next.toISOString(),
+    cooldownHours: SPIN_COOLDOWN_HOURS,
+  };
+}
+
+function spinWheel(userId) {
+  const user = getUserByIdStmt.get(userId);
+  const next = nextSpinAt(user);
+  if (next && next > new Date()) throw new Error('SPIN_COOLDOWN');
+
+  const prize = pickSpinPrize();
+  setLastSpinStmt.run(userId);
+  if (prize.points > 0) {
+    insertLedgerStmt.run(userId, prize.points, `Ruleta: ${prize.label}`);
+  }
+  return { prize, balance: getPointsBalance(userId), spinStatus: getSpinStatus(userId) };
 }
 
 // ───────────────────────── familia / compartidos ─────────────────────────
@@ -982,6 +1073,15 @@ module.exports = {
   REWARD_THRESHOLD,
   REFERRAL_BONUS_POINTS,
   REFERRAL_WELCOME_POINTS,
+  // niveles de fidelidad
+  getLifetimePoints,
+  getTierForUser,
+  TIER_SILVER_THRESHOLD,
+  TIER_GOLD_THRESHOLD,
+  // ruleta de premios
+  spinWheel,
+  getSpinStatus,
+  SPIN_COOLDOWN_HOURS,
   // familia
   createFamilyGroup,
   joinFamilyGroup,

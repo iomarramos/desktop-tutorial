@@ -310,6 +310,20 @@ function formatVigencia(promo){
   return `Válido del ${promo.starts_at} al ${promo.ends_at}`;
 }
 
+function formatCountdown(endsAt){
+  if (!endsAt) return '';
+  const end = new Date(endsAt);
+  if (Number.isNaN(end.getTime())) return '';
+  const diffMs = end.getTime() - Date.now();
+  if (diffMs <= 0) return '';
+  const mins = Math.floor(diffMs / 60000);
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  if (days > 0) return ` · ⏳ Termina en ${days}d ${hours}h`;
+  if (hours > 0) return ` · ⏳ Termina en ${hours}h ${mins % 60}m`;
+  return ` · ⏳ Termina en ${mins % 60}m`;
+}
+
 async function loadPromoPopup(){
   try{
     const r = await fetch('/api/promotions');
@@ -325,7 +339,7 @@ async function loadPromoPopup(){
     else photoEl.style.display = 'none';
     document.getElementById('popup-title').textContent = promo.title;
     document.getElementById('popup-body').textContent = promo.body;
-    document.getElementById('popup-vigencia').textContent = formatVigencia(promo);
+    document.getElementById('popup-vigencia').textContent = formatVigencia(promo) + formatCountdown(promo.ends_at);
     document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
     document.getElementById('promo-popup').classList.add('show');
     markPromoSeen(promo.publication_code);

@@ -13,6 +13,9 @@ process.env.REFERRAL_BONUS_POINTS = '20';
 process.env.REFERRAL_WELCOME_POINTS = '10';
 process.env.TOTP_MAX_ATTEMPTS = '5';
 process.env.TOTP_LOCKOUT_MINUTES = '5';
+process.env.TIER_SILVER_THRESHOLD = '100';
+process.env.TIER_GOLD_THRESHOLD = '300';
+process.env.SPIN_COOLDOWN_HOURS = '24';
 
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -221,4 +224,39 @@ test('wallet: markWalletSaved agrega al usuario a listWalletSavedUserIds', () =>
 
   assert.ok(!db.listWalletSavedUserIds().includes(before.id));
   assert.ok(db.listWalletSavedUserIds().includes(after1.id));
+});
+
+// ───────────────────────── niveles de fidelidad ─────────────────────────
+
+test('niveles: sube de bronce a plata a oro según puntos de por vida, y el canje no baja de nivel', () => {
+  const user = makeUser('Nivel');
+  assert.equal(db.getTierForUser(user.id).tier, 'bronce');
+
+  db.addPurchase({ userId: user.id, monto: 500, producto: 'x' }); // 100 puntos
+  assert.equal(db.getTierForUser(user.id).tier, 'plata');
+  assert.equal(db.getTierForUser(user.id).pointsToNext, 200);
+
+  db.addPurchase({ userId: user.id, monto: 1000, producto: 'y' }); // +200 puntos = 300
+  assert.equal(db.getTierForUser(user.id).tier, 'oro');
+  assert.equal(db.getTierForUser(user.id).pointsToNext, 0);
+
+  // canjear puntos baja el saldo pero no el nivel (se basa en lo ganado, no en el saldo)
+  db.redeemPoints(user.id, 250, 'canje de prueba');
+  assert.equal(db.getTierForUser(user.id).tier, 'oro');
+});
+
+// ───────────────────────── ruleta de premios ─────────────────────────
+
+test('ruleta: la primera vez está disponible, otorga un premio válido y aplica cooldown', () => {
+  const user = makeUser('Ruleta');
+  assert.equal(db.getSpinStatus(user.id).available, true);
+
+  const before = db.getPointsBalance(user.id);
+  const result = db.spinWheel(user.id);
+  assert.ok(result.prize.points >= 0);
+  assert.equal(db.getPointsBalance(user.id), before + result.prize.points);
+  assert.equal(db.getSpinStatus(user.id).available, false);
+  assert.ok(db.getSpinStatus(user.id).nextSpinAt);
+
+  assert.throws(() => db.spinWheel(user.id), /SPIN_COOLDOWN/);
 });
