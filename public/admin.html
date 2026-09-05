@@ -58,7 +58,7 @@ th{font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;opacity:.6}
 
 .field{display:grid;gap:.35rem;margin-bottom:.9rem}
 label{font-weight:700;font-size:.82rem}
-input[type=text],input[type=number],input[type=email],textarea{padding:.75rem 1rem;border-radius:12px;border:2px solid rgba(13,27,75,.2);
+input[type=text],input[type=number],input[type=email],select,textarea{padding:.75rem 1rem;border-radius:12px;border:2px solid rgba(13,27,75,.2);
   font-family:var(--fb);font-size:.9rem;width:100%}
 textarea{resize:vertical;min-height:70px}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;align-items:end;margin-bottom:1rem}
@@ -116,6 +116,7 @@ textarea{resize:vertical;min-height:70px}
     <button class="tab-btn" data-tab="compras">Compras</button>
     <button class="tab-btn" data-tab="productos">Productos</button>
     <button class="tab-btn" data-tab="promos">Promociones</button>
+    <button class="tab-btn" data-tab="perfil">Campos de perfil</button>
     <button class="tab-btn" data-tab="suscriptores">Pre-registro</button>
   </div>
 
@@ -284,6 +285,44 @@ textarea{resize:vertical;min-height:70px}
     </div>
   </div>
 
+  <div id="tab-perfil" class="tab-panel hidden">
+    <div class="card">
+      <h2>Nuevo campo de perfil</h2>
+      <p class="lead" style="margin-bottom:.8rem;font-size:.85rem">Pide cualquier dato adicional al cliente (ej. fecha de nacimiento) sin tocar código. Si lo marcas obligatorio, se le pedirá la próxima vez que entre a su cuenta.</p>
+      <div class="form-grid">
+        <div class="field" style="margin:0">
+          <label for="pf-label">Etiqueta (lo que ve el cliente)</label>
+          <input type="text" id="pf-label" placeholder="Fecha de nacimiento">
+        </div>
+        <div class="field" style="margin:0">
+          <label for="pf-key">Clave interna (sin espacios)</label>
+          <input type="text" id="pf-key" placeholder="fecha_nacimiento">
+        </div>
+        <div class="field" style="margin:0">
+          <label for="pf-type">Tipo</label>
+          <select id="pf-type">
+            <option value="text">Texto</option>
+            <option value="date">Fecha</option>
+            <option value="number">Número</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0">
+          <label for="pf-required"><input type="checkbox" id="pf-required" style="width:auto;margin-right:.4rem">Obligatorio</label>
+        </div>
+        <button class="btn small" id="pf-submit-btn">Crear campo</button>
+      </div>
+      <div class="msg" id="pf-msg"></div>
+    </div>
+    <div class="card">
+      <h2>Campos configurados</h2>
+      <table>
+        <thead><tr><th>Etiqueta</th><th>Clave</th><th>Tipo</th><th>Obligatorio</th><th>Activo</th><th></th></tr></thead>
+        <tbody id="perfil-body"></tbody>
+      </table>
+      <p class="empty hidden" id="perfil-empty">Sin campos adicionales todavía.</p>
+    </div>
+  </div>
+
   <div id="tab-suscriptores" class="tab-panel hidden">
     <div class="card">
       <h2>Suscritos a la apertura (pre-registro)</h2>
@@ -375,6 +414,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'compras') loadCompras();
     if (btn.dataset.tab === 'productos') loadProductos();
     if (btn.dataset.tab === 'promos') { loadPromos(); loadProductCheckboxes(); }
+    if (btn.dataset.tab === 'perfil') loadPerfilFields();
     if (btn.dataset.tab === 'suscriptores') loadSuscriptores();
   });
 });
@@ -748,6 +788,74 @@ document.getElementById('prod-submit-btn').addEventListener('click', async () =>
   document.getElementById('prod-photo').value = '';
   document.getElementById('prod-price').value = '';
   loadProductos();
+});
+
+// ═══ Campos de perfil ═══
+
+const PF_TYPE_LABELS = { text: 'Texto', number: 'Número', date: 'Fecha' };
+
+async function loadPerfilFields(){
+  const data = await adminFetch('/api/admin/profile-fields');
+  const body = document.getElementById('perfil-body');
+  body.innerHTML = '';
+  document.getElementById('perfil-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(field => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${field.label}</td><td><code>${field.field_key}</code></td>
+      <td>${PF_TYPE_LABELS[field.field_type] || field.field_type}</td>
+      <td>${field.required ? '✅' : '—'}</td><td>${field.active ? '✅' : '—'}</td><td></td>`;
+    const actionTd = tr.lastElementChild;
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn ghost small';
+    editBtn.textContent = 'Editar';
+    editBtn.onclick = async () => {
+      const label = prompt('Etiqueta', field.label);
+      if (label === null) return;
+      const required = confirm('¿Obligatorio? Aceptar = sí, Cancelar = no.');
+      const { ok, data } = await adminPost('/api/admin/profile-fields/update', { id: field.id, label, required });
+      if (!ok) { alert(data.error || 'No se pudo editar.'); return; }
+      loadPerfilFields();
+    };
+    actionTd.appendChild(editBtn);
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn ghost small';
+    toggleBtn.textContent = field.active ? 'Desactivar' : 'Activar';
+    toggleBtn.onclick = async () => {
+      await adminPost('/api/admin/profile-fields/update', { id: field.id, active: !field.active });
+      loadPerfilFields();
+    };
+    actionTd.appendChild(toggleBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn ghost small';
+    deleteBtn.textContent = 'Eliminar';
+    deleteBtn.onclick = async () => {
+      if (!confirm(`¿Eliminar definitivamente "${field.label}"? Si algún cliente ya tiene un valor guardado, no se podrá y hay que desactivarlo en su lugar.`)) return;
+      const { ok, data } = await adminPost('/api/admin/profile-fields/delete', { id: field.id });
+      if (!ok) { alert(data.error); return; }
+      loadPerfilFields();
+    };
+    actionTd.appendChild(deleteBtn);
+
+    body.appendChild(tr);
+  });
+}
+
+document.getElementById('pf-submit-btn').addEventListener('click', async () => {
+  const label = document.getElementById('pf-label').value.trim();
+  const key = document.getElementById('pf-key').value.trim();
+  const type = document.getElementById('pf-type').value;
+  const required = document.getElementById('pf-required').checked;
+  if (!label || !key) { setMsg('pf-msg', 'error', 'Ingresa una etiqueta y una clave.'); return; }
+  const { ok, data } = await adminPost('/api/admin/profile-fields', { label, key, type, required });
+  if (!ok) { setMsg('pf-msg', 'error', data.error || 'No se pudo crear el campo.'); return; }
+  setMsg('pf-msg', 'ok', `✅ Campo "${data.field.label}" creado.`);
+  document.getElementById('pf-label').value = '';
+  document.getElementById('pf-key').value = '';
+  document.getElementById('pf-required').checked = false;
+  loadPerfilFields();
 });
 
 async function loadSuscriptores(){

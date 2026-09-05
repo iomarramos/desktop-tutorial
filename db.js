@@ -143,6 +143,31 @@ db.exec(`
   )
 `);
 
+// Campos de perfil configurables desde el admin (ej. fecha de nacimiento,
+// algún número de referencia futuro) sin necesitar una migración de columna
+// nueva cada vez — se agregan/quitan como filas, no como ALTER TABLE.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS profile_fields (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    field_key TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    field_type TEXT NOT NULL DEFAULT 'text',
+    required INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_profile_values (
+    user_id INTEGER NOT NULL,
+    field_id INTEGER NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, field_id)
+  )
+`);
+
 // Migración in-place: agrega columnas nuevas a `promotions` si la base de
 // datos ya existía de una versión anterior (SQLite no soporta
 // "ADD COLUMN IF NOT EXISTS").
@@ -176,6 +201,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(use
 db.exec('CREATE INDEX IF NOT EXISTS idx_promo_products_promo ON promotion_products(promotion_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_promo_codes_promo ON promotion_codes(promotion_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_promo_redemptions_code ON promotion_redemptions(promotion_code_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_profile_values_user ON user_profile_values(user_id)');
 
 const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process.env.SOLES_PER_PUNTO) : 5;
 const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
@@ -669,6 +695,92 @@ function deleteProduct(id) {
   if (info.changes === 0) throw new Error('PRODUCT_NOT_FOUND');
 }
 
+// ───────────────────────── campos de perfil dinámicos ─────────────────────────
+//
+// Permite pedir información adicional del cliente (fecha de nacimiento, algún
+// número de referencia futuro, lo que sea) sin necesitar una migración de
+// columna nueva cada vez: el admin crea el campo desde el panel y el cliente
+// lo ve la próxima vez que entra, si está marcado como obligatorio.
+
+const insertProfileFieldStmt = db.prepare(
+  'INSERT INTO profile_fields (field_key, label, field_type, required) VALUES (?, ?, ?, ?)'
+);
+const getProfileFieldByIdStmt = db.prepare('SELECT * FROM profile_fields WHERE id = ?');
+const getProfileFieldByKeyStmt = db.prepare('SELECT * FROM profile_fields WHERE field_key = ?');
+const listActiveProfileFieldsStmt = db.prepare('SELECT * FROM profile_fields WHERE active = 1 ORDER BY id');
+const adminListProfileFieldsStmt = db.prepare('SELECT * FROM profile_fields ORDER BY id');
+const updateProfileFieldStmt = db.prepare(
+  'UPDATE profile_fields SET label = ?, field_type = ?, required = ?, active = ? WHERE id = ?'
+);
+const countValuesForFieldStmt = db.prepare('SELECT COUNT(*) AS total FROM user_profile_values WHERE field_id = ?');
+const deleteProfileFieldStmt = db.prepare('DELETE FROM profile_fields WHERE id = ?');
+const getUserProfileValuesStmt = db.prepare(
+  `SELECT f.id, f.field_key, f.label, f.field_type, f.required, v.value
+   FROM profile_fields f
+   LEFT JOIN user_profile_values v ON v.field_id = f.id AND v.user_id = ?
+   WHERE f.active = 1
+   ORDER BY f.id`
+);
+const upsertUserProfileValueStmt = db.prepare(
+  `INSERT INTO user_profile_values (user_id, field_id, value, updated_at)
+   VALUES (?, ?, ?, datetime('now'))
+   ON CONFLICT(user_id, field_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+);
+
+function createProfileField({ key, label, type, required }) {
+  const info = insertProfileFieldStmt.run(key, label, type || 'text', required ? 1 : 0);
+  return getProfileFieldByIdStmt.get(info.lastInsertRowid);
+}
+
+function getProfileFieldByKey(key) {
+  return getProfileFieldByKeyStmt.get(key);
+}
+
+function listActiveProfileFields() {
+  return listActiveProfileFieldsStmt.all();
+}
+
+function adminListProfileFields() {
+  return adminListProfileFieldsStmt.all();
+}
+
+function updateProfileField(id, { label, type, required, active }) {
+  const existing = getProfileFieldByIdStmt.get(id);
+  if (!existing) throw new Error('PROFILE_FIELD_NOT_FOUND');
+  updateProfileFieldStmt.run(
+    label != null && label !== '' ? label : existing.label,
+    type || existing.field_type,
+    required !== undefined ? (required ? 1 : 0) : existing.required,
+    active !== undefined ? (active ? 1 : 0) : existing.active,
+    id
+  );
+  return getProfileFieldByIdStmt.get(id);
+}
+
+// Borrado real solo si nadie llenó ese campo todavía; si ya hay datos,
+// desactivarlo en vez de borrarlo para no perder lo ya recolectado.
+function deleteProfileField(id) {
+  if (countValuesForFieldStmt.get(id).total > 0) throw new Error('PROFILE_FIELD_IN_USE');
+  const info = deleteProfileFieldStmt.run(id);
+  if (info.changes === 0) throw new Error('PROFILE_FIELD_NOT_FOUND');
+}
+
+// Todos los campos activos con el valor del usuario (null si aún no lo llenó).
+function getUserProfileValues(userId) {
+  return getUserProfileValuesStmt.all(userId);
+}
+
+function getMissingRequiredFields(userId) {
+  return getUserProfileValues(userId).filter((f) => f.required && (f.value === null || f.value === undefined));
+}
+
+function setUserProfileValues(userId, valuesByFieldId) {
+  for (const [fieldId, value] of Object.entries(valuesByFieldId)) {
+    if (value === undefined || value === null || value === '') continue;
+    upsertUserProfileValueStmt.run(userId, Number(fieldId), String(value));
+  }
+}
+
 // ───────────────────────── promociones ─────────────────────────
 
 const insertPromotionStmt = db.prepare(
@@ -1122,6 +1234,16 @@ module.exports = {
   deactivateProduct,
   updateProduct,
   deleteProduct,
+  // campos de perfil dinámicos
+  createProfileField,
+  getProfileFieldByKey,
+  listActiveProfileFields,
+  adminListProfileFields,
+  updateProfileField,
+  deleteProfileField,
+  getUserProfileValues,
+  getMissingRequiredFields,
+  setUserProfileValues,
   // promociones
   createPromotion,
   addPromotionCode,

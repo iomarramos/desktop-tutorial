@@ -167,6 +167,16 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
   <div class="msg" id="profile-msg"></div>
 </section>
 
+<!-- ═══ ESTADO: CAMPOS ADICIONALES (obligatorios, agregados por el admin) ═══ -->
+<section id="view-extra-fields" class="card hidden">
+  <span class="kicker">// Un dato más</span>
+  <h1>Nos falta un dato<span id="extra-fields-name"></span></h1>
+  <p class="lead">Antes de continuar, necesitamos que completes lo siguiente.</p>
+  <div id="extra-fields-form"></div>
+  <button class="btn" id="extra-fields-confirm-btn">Continuar</button>
+  <div class="msg" id="extra-fields-msg"></div>
+</section>
+
 <!-- ═══ ESTADO: CONFIGURAR 2FA (primera vez) ═══ -->
 <section id="view-2fa-setup" class="card hidden">
   <span class="kicker">// Paso 2 de 2</span>
@@ -300,6 +310,14 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
     </div>
     <div class="msg" id="family-msg"></div>
   </div>
+
+  <div class="card hidden" id="extra-info-card">
+    <h2>Tu información</h2>
+    <p class="lead" style="margin-bottom:.8rem;font-size:.85rem">Puedes completar o actualizar estos datos cuando quieras.</p>
+    <div id="extra-info-form"></div>
+    <button class="btn small" id="extra-info-save-btn">Guardar</button>
+    <div class="msg" id="extra-info-msg"></div>
+  </div>
 </section>
 
 </main>
@@ -345,7 +363,7 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </div>
 
 <script>
-const views = ['login', 'profile-complete', '2fa-setup', '2fa-verify', 'wallet'];
+const views = ['login', 'profile-complete', 'extra-fields', '2fa-setup', '2fa-verify', 'wallet'];
 function showView(name){
   document.getElementById('loading').classList.add('hidden');
   views.forEach(v => document.getElementById(`view-${v}`).classList.toggle('hidden', v !== name));
@@ -383,6 +401,13 @@ async function init(){
     return;
   }
 
+  if (data.stage === 'needs_extra_fields') {
+    document.getElementById('extra-fields-name').textContent = data.name ? `, ${data.name.split(' ')[0]}` : '';
+    renderExtraFieldsForm(data.fields);
+    showView('extra-fields');
+    return;
+  }
+
   if (data.stage === 'needs_2fa_setup') {
     showView('2fa-setup');
     await startTotpSetup();
@@ -413,6 +438,35 @@ document.getElementById('profile-confirm-btn').addEventListener('click', async (
     setMsg('profile-msg', 'error', firstError || data.error || 'No se pudo guardar tu perfil.');
     return;
   }
+  document.getElementById('loading').classList.remove('hidden');
+  views.forEach(v => document.getElementById(`view-${v}`).classList.add('hidden'));
+  await init();
+});
+
+function inputTypeFor(fieldType){
+  if (fieldType === 'date') return 'date';
+  if (fieldType === 'number') return 'number';
+  return 'text';
+}
+
+function renderExtraFieldsForm(fields){
+  const container = document.getElementById('extra-fields-form');
+  container.innerHTML = '';
+  fields.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'field';
+    div.innerHTML = `<label for="extra-field-${f.id}">${f.label}${f.required ? ' *' : ''}</label>
+      <input type="${inputTypeFor(f.field_type)}" id="extra-field-${f.id}" data-field-id="${f.id}">`;
+    container.appendChild(div);
+  });
+}
+
+document.getElementById('extra-fields-confirm-btn').addEventListener('click', async () => {
+  const inputs = document.querySelectorAll('#extra-fields-form input[data-field-id]');
+  const values = {};
+  inputs.forEach(input => { if (input.value.trim()) values[input.dataset.fieldId] = input.value.trim(); });
+  const { ok, data } = await api('/api/profile/fields', { method: 'POST', body: JSON.stringify({ values }) });
+  if (!ok) { setMsg('extra-fields-msg', 'error', data.error || 'No se pudo guardar.'); return; }
   document.getElementById('loading').classList.remove('hidden');
   views.forEach(v => document.getElementById(`view-${v}`).classList.add('hidden'));
   await init();
@@ -468,6 +522,7 @@ function renderWallet(user){
   renderReward(user.reward);
   renderTier(user.tier);
   renderSpin(user.spinStatus);
+  renderExtraInfoCard(user.profileFields);
 
   document.getElementById('copy-ref-btn').onclick = () => {
     const link = `${location.origin}/cuenta.html?ref=${user.referralCode}`;
@@ -616,6 +671,34 @@ async function refreshUser(){
     renderWallet(data.user);
   }
 }
+
+// ═══ Información adicional (campos configurados por el admin) ═══
+
+function renderExtraInfoCard(fields){
+  const card = document.getElementById('extra-info-card');
+  if (!fields || fields.length === 0) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  const container = document.getElementById('extra-info-form');
+  container.innerHTML = '';
+  fields.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'field';
+    div.innerHTML = `<label for="extra-info-${f.id}">${f.label}${f.required ? ' *' : ''}</label>
+      <input type="${inputTypeFor(f.field_type)}" id="extra-info-${f.id}" data-field-id="${f.id}" value="${f.value || ''}">`;
+    container.appendChild(div);
+  });
+}
+
+document.getElementById('extra-info-save-btn').addEventListener('click', async () => {
+  const inputs = document.querySelectorAll('#extra-info-form input[data-field-id]');
+  const values = {};
+  inputs.forEach(input => { if (input.value.trim()) values[input.dataset.fieldId] = input.value.trim(); });
+  const { ok, data } = await api('/api/profile/fields', { method: 'POST', body: JSON.stringify({ values }) });
+  if (!ok) { setMsg('extra-info-msg', 'error', data.error || 'No se pudo guardar.'); return; }
+  setMsg('extra-info-msg', 'ok', 'Guardado.');
+  renderExtraInfoCard(data.items);
+});
 
 // ═══ Promociones ═══
 

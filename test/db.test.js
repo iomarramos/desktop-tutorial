@@ -281,3 +281,39 @@ test('perfil: un DNI ya vinculado a otro usuario lanza DNI_TAKEN', () => {
 
   assert.throws(() => db.setUserContactInfo(luis.id, '11111111', '922222222'), /DNI_TAKEN/);
 });
+
+// ───────────────────────── campos de perfil dinámicos ─────────────────────────
+
+test('campos de perfil: un campo obligatorio sin llenar aparece en getMissingRequiredFields', () => {
+  const user = makeUser('Campo obligatorio');
+  const field = db.createProfileField({ key: 'cumple_test', label: 'Cumpleaños', type: 'date', required: true });
+
+  const missing = db.getMissingRequiredFields(user.id);
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].field_key, 'cumple_test');
+
+  db.setUserProfileValues(user.id, { [field.id]: '2000-01-01' });
+  assert.equal(db.getMissingRequiredFields(user.id).length, 0);
+
+  const values = db.getUserProfileValues(user.id);
+  assert.equal(values.find((v) => v.id === field.id).value, '2000-01-01');
+});
+
+test('campos de perfil: un campo opcional nunca bloquea', () => {
+  const user = makeUser('Campo opcional');
+  db.createProfileField({ key: 'opcional_test', label: 'Opcional', type: 'text', required: false });
+  const missing = db.getMissingRequiredFields(user.id);
+  assert.ok(!missing.some((f) => f.field_key === 'opcional_test'));
+});
+
+test('campos de perfil: no se puede borrar un campo con valores, sí desactivar', () => {
+  const user = makeUser('Campo en uso');
+  const field = db.createProfileField({ key: 'en_uso_test', label: 'En uso', type: 'text', required: false });
+  db.setUserProfileValues(user.id, { [field.id]: 'algo' });
+
+  assert.throws(() => db.deleteProfileField(field.id), /PROFILE_FIELD_IN_USE/);
+
+  const updated = db.updateProfileField(field.id, { active: false });
+  assert.equal(updated.active, 0);
+  assert.ok(!db.listActiveProfileFields().some((f) => f.id === field.id));
+});

@@ -20,10 +20,13 @@ Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
    wallet (con buscador y exportación a CSV, y botón para forzar el cierre
    de sesión de un cliente), afiliados, grupos compartidos, registro de
    compras desde un formulario, **catálogo de productos** (crear/editar/
-   desactivar/eliminar) y **promociones completas** (foto, vigencia,
+   desactivar/eliminar), **promociones completas** (foto, vigencia,
    productos asociados, código de publicación autogenerado, códigos de
    canje por sucursal/tanda con límite de usos, editar/desactivar/eliminar)
-   con banner + popup + push.
+   con banner + popup + push, y **campos de perfil dinámicos**: crear en
+   cualquier momento un dato nuevo a pedirle al cliente (ej. fecha de
+   nacimiento, un número de referencia) sin tocar código — si se marca
+   obligatorio, se le pide la próxima vez que entra a su cuenta.
 
 Todo corre en un servidor HTTP plano (sin frameworks) con persistencia en
 SQLite, con tests automatizados (`node:test`, sin dependencias), CI en
@@ -104,7 +107,8 @@ variable de entorno `PORT`).
   se versiona en git). Tablas: `subscribers` (pre-registro), `users`,
   `sessions`, `purchases`, `points_ledger`, `family_groups`, `products`,
   `promotions`, `promotion_products`, `promotion_codes`,
-  `promotion_redemptions`, `push_subscriptions`.
+  `promotion_redemptions`, `push_subscriptions`, `profile_fields` +
+  `user_profile_values` (campos de perfil dinámicos, ver más abajo).
 - `auth/google.js`: flujo OAuth2 con Google (authorization code + verificación
   del `id_token` vía el endpoint `tokeninfo` de Google).
 - `auth/totp.js`: generación y verificación de códigos TOTP (RFC 6238) para
@@ -200,6 +204,14 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `POST /api/profile/complete` — Body `{ dni, telefono }`. Vincula DNI
   (8 dígitos) y celular peruano (9 dígitos, empieza con 9) a la cuenta.
   409 si el DNI ya está vinculado a otro usuario.
+- `stage: 'needs_extra_fields'` en `/api/me` — falta llenar un **campo de
+  perfil dinámico** marcado como obligatorio (ver más abajo); trae
+  `fields: [{ id, field_key, label, field_type }]` con lo que falta.
+- `POST /api/profile/fields` — Body `{ values: { <fieldId>: valor, ... } }`.
+  Guarda uno o más valores de campos dinámicos (sirve tanto para completar
+  el gate obligatorio como para editar campos opcionales en cualquier
+  momento desde la tarjeta "Tu información" de `cuenta.html`). Devuelve
+  `items` con todos los campos activos y su valor actual.
 - `POST /api/2fa/setup` — Genera el secreto TOTP y la URL `otpauth://` para
   el QR (solo en primer login).
 - `POST /api/2fa/verify` — Body `{ code }`. Confirma el 2FA (setup o login).
@@ -269,6 +281,16 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `POST /api/admin/products/update` — Body `{ id, name, photoUrl, price }`.
 - `POST /api/admin/products/delete` — Body `{ id }`. Borrado real; falla si
   el producto está asociado a alguna promoción (desactivarlo en ese caso).
+- `GET /api/admin/profile-fields` — Lista todos los campos de perfil
+  dinámicos (activos e inactivos).
+- `POST /api/admin/profile-fields` — Body `{ key, label, type, required }`.
+  Crea un campo nuevo (`type`: `text` | `number` | `date`). 409 si la
+  clave ya existe.
+- `POST /api/admin/profile-fields/update` — Body `{ id, label, type,
+  required, active }` (todos opcionales salvo `id`).
+- `POST /api/admin/profile-fields/delete` — Body `{ id }`. Borrado real;
+  falla si algún cliente ya tiene un valor guardado en ese campo
+  (desactivarlo en ese caso, no se pierde lo ya recolectado).
 - `POST /api/admin/users/force-logout` — Body `{ email }`. Cierra la sesión
   de ese cliente en todos sus dispositivos (celular perdido/robado, cuenta
   comprometida, etc.).
@@ -394,3 +416,33 @@ enviar nada, en línea con la Ley de Protección de Datos Personales (Ley
 29733). Lo mismo aplica el día que se pida fecha de nacimiento para la
 promo de cumpleaños: pedirla junto con su propio opt-in, no reusar el
 consentimiento de WhatsApp para otro fin.
+
+**Actualización 2**: ya existe el mecanismo para pedir la fecha de
+nacimiento (y cualquier otro dato futuro) sin escribir código — ver
+"Campos de perfil dinámicos" abajo. Falta: crear el campo `fecha_nacimiento`
+desde el admin cuando se decida activarlo, y el propio envío de la promo de
+cumpleaños (hoy nada lee `user_profile_values` para mandar nada — el dato
+se recolecta pero aún no dispara ninguna campaña automática).
+
+## Campos de perfil dinámicos
+
+Para pedir cualquier dato adicional al cliente en el futuro (fecha de
+nacimiento, un número de referencia, lo que sea) sin necesitar una
+migración de columna ni un despliegue nuevo:
+
+- El admin crea el campo desde la pestaña **Campos de perfil**: una
+  etiqueta (lo que ve el cliente), una clave interna, un tipo
+  (texto/número/fecha) y si es obligatorio.
+- Si es **obligatorio**, la próxima vez que el cliente entre a
+  `/cuenta.html` (`GET /api/me` devuelve `stage: 'needs_extra_fields'`) se
+  le pide antes de dejarlo continuar — aplica incluso a cuentas que ya
+  estaban activas antes de crear el campo.
+- Si es **opcional**, aparece en la tarjeta "Tu información" de la wallet,
+  donde el cliente lo puede llenar o actualizar cuando quiera.
+- Editar o desactivar un campo no borra los datos ya recolectados; borrarlo
+  de verdad solo se permite si ningún cliente tiene un valor guardado ahí
+  (`PROFILE_FIELD_IN_USE` en caso contrario).
+- Los valores se guardan en `user_profile_values` (`user_id`, `field_id`,
+  `value` como texto plano) — quien construya una campaña futura (ej.
+  cumpleaños) necesita leer esa tabla directamente; no hay todavía ninguna
+  automatización que lo haga.

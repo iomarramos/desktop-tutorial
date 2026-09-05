@@ -12,6 +12,8 @@ const {
   getTierForUser, spinWheel, getSpinStatus,
   createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser, leaveFamilyGroup, removeFamilyMember,
   createProduct, listActiveProducts, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
+  createProfileField, getProfileFieldByKey, adminListProfileFields,
+  updateProfileField, deleteProfileField, getUserProfileValues, getMissingRequiredFields, setUserProfileValues,
   createPromotion, addPromotionCode, redeemPromotionCode,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
   updatePromotion, deletePromotion,
@@ -213,6 +215,7 @@ function serializeUser(user) {
     reward,
     tier: getTierForUser(user.id),
     spinStatus: getSpinStatus(user.id),
+    profileFields: getUserProfileValues(user.id),
     referralCode: user.referral_code,
     totpEnabled: Boolean(user.totp_enabled),
     familyGroup: family,
@@ -237,6 +240,20 @@ async function handleMe(req, res) {
       stage: 'needs_profile',
       name: user.name,
       email: user.email,
+    });
+  }
+
+  // Campos adicionales configurados desde el admin (ej. cumpleaños): se
+  // revisa en cada /api/me, así que aplica incluso a sesiones que ya
+  // estaban activas antes de que el admin marcara un campo como obligatorio.
+  const missingFields = getMissingRequiredFields(user.id);
+  if (missingFields.length > 0) {
+    return sendJson(res, 200, {
+      authenticated: false,
+      stage: 'needs_extra_fields',
+      name: user.name,
+      email: user.email,
+      fields: missingFields,
     });
   }
 
@@ -1018,6 +1035,103 @@ async function handleAdminProductDelete(req, res) {
   }
 }
 
+// ───────────────────────── administrador: campos de perfil dinámicos ─────────────────────────
+
+function handleAdminProfileFieldsList(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, items: adminListProfileFields() });
+}
+
+async function handleAdminProfileFieldCreate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const key = String(body.key || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const label = String(body.label || '').trim();
+  const type = ['text', 'number', 'date'].includes(body.type) ? body.type : 'text';
+  if (!key || !label) return sendJson(res, 400, { ok: false, error: 'El campo necesita una clave y una etiqueta.' });
+
+  if (getProfileFieldByKey(key)) {
+    return sendJson(res, 409, { ok: false, error: 'Ya existe un campo con esa clave.' });
+  }
+
+  const field = createProfileField({ key, label, type, required: Boolean(body.required) });
+  sendJson(res, 201, { ok: true, field });
+}
+
+async function handleAdminProfileFieldUpdate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del campo.' });
+
+  try {
+    const field = updateProfileField(body.id, {
+      label: body.label,
+      type: body.type,
+      required: body.required,
+      active: body.active,
+    });
+    sendJson(res, 200, { ok: true, field });
+  } catch {
+    sendJson(res, 404, { ok: false, error: 'Campo no encontrado.' });
+  }
+}
+
+async function handleAdminProfileFieldDelete(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del campo.' });
+
+  try {
+    deleteProfileField(body.id);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    const msg = err.message === 'PROFILE_FIELD_IN_USE'
+      ? 'Ya hay clientes con datos en este campo: no se puede borrar, solo desactivar.'
+      : 'Campo no encontrado.';
+    sendJson(res, 400, { ok: false, error: msg });
+  }
+}
+
+// ───────────────────────── cliente: campos de perfil dinámicos ─────────────────────────
+
+async function handleProfileFieldsSubmit(req, res) {
+  if (rateLimited(req, res, 'profile-fields', { max: 20, windowMs: 10 * 60_000 })) return;
+  const found = getSessionFromRequest(req);
+  if (!found) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const values = body.values && typeof body.values === 'object' ? body.values : {};
+  setUserProfileValues(found.session.user_id, values);
+  sendJson(res, 200, { ok: true, items: getUserProfileValues(found.session.user_id) });
+}
+
 // ───────────────────────── administrador: exportar CSV ─────────────────────────
 
 function csvEscape(value) {
@@ -1133,6 +1247,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/points/redeem') return handlePointsRedeem(req, res);
     if (req.method === 'GET' && url === '/api/wallet/spin') return handleSpinStatus(req, res);
     if (req.method === 'POST' && url === '/api/wallet/spin') return handleSpinPlay(req, res);
+    if (req.method === 'POST' && url === '/api/profile/fields') return handleProfileFieldsSubmit(req, res);
     if (req.method === 'POST' && url === '/api/family/create') return handleFamilyCreate(req, res);
     if (req.method === 'POST' && url === '/api/family/join') return handleFamilyJoin(req, res);
     if (req.method === 'POST' && url === '/api/family/leave') return handleFamilyLeave(req, res);
@@ -1166,6 +1281,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/admin/products/deactivate') return handleAdminProductDeactivate(req, res);
     if (req.method === 'POST' && url === '/api/admin/products/update') return handleAdminProductUpdate(req, res);
     if (req.method === 'POST' && url === '/api/admin/products/delete') return handleAdminProductDelete(req, res);
+    if (req.method === 'GET' && url === '/api/admin/profile-fields') return handleAdminProfileFieldsList(req, res);
+    if (req.method === 'POST' && url === '/api/admin/profile-fields') return handleAdminProfileFieldCreate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/profile-fields/update') return handleAdminProfileFieldUpdate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/profile-fields/delete') return handleAdminProfileFieldDelete(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/users.csv') return handleAdminExportUsers(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/purchases.csv') return handleAdminExportPurchases(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/referrals.csv') return handleAdminExportReferrals(req, res);
