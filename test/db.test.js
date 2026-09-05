@@ -207,3 +207,18 @@ test('sesiones: deleteAllSessionsForUser revoca todas las sesiones del usuario',
   assert.equal(db.getSession(t1), undefined);
   assert.equal(db.getSession(t2), undefined);
 });
+
+// ───────────────────────── Google Wallet ─────────────────────────
+
+test('wallet: markWalletSaved agrega al usuario a listWalletSavedUserIds', () => {
+  const before = makeUser('Sin wallet guardada');
+  const after1 = makeUser('Con wallet guardada');
+
+  assert.ok(!db.listWalletSavedUserIds().includes(before.id));
+  assert.ok(!db.listWalletSavedUserIds().includes(after1.id));
+
+  db.markWalletSaved(after1.id);
+
+  assert.ok(!db.listWalletSavedUserIds().includes(before.id));
+  assert.ok(db.listWalletSavedUserIds().includes(after1.id));
+});

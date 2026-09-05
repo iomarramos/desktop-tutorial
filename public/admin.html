@@ -665,7 +665,7 @@ document.getElementById('promo-submit-btn').addEventListener('click', async () =
   if (!title || !body) { setMsg('promo-msg', 'error', 'Completa título y mensaje.'); return; }
   const { ok, data } = await adminPost('/api/admin/promotions', { title, body, photoUrl, startsAt, endsAt, productIds });
   if (!ok) { setMsg('promo-msg', 'error', data.error || 'No se pudo publicar.'); return; }
-  setMsg('promo-msg', 'ok', `✅ Publicada (${data.promotion.publication_code}). Push enviado a ${data.pushSent} dispositivo(s).`);
+  setMsg('promo-msg', 'ok', `✅ Publicada (${data.promotion.publication_code}). Push enviado a ${data.pushSent} dispositivo(s) y ${data.walletPushSent} wallet(s).`);
   document.getElementById('promo-title').value = '';
   document.getElementById('promo-body').value = '';
   document.getElementById('promo-photo').value = '';

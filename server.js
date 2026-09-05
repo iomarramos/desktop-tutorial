@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const {
   addSubscriber, dniExists, getCount, listSubscribers,
   upsertGoogleUser, getUserById, getUserByEmail, getUserByReferralCode, setReferredBy,
-  setTotpSecret, enableTotp,
+  setTotpSecret, enableTotp, markWalletSaved, listWalletSavedUserIds,
   createSession, getSession, setSessionStage, deleteSession, deleteAllSessionsForUser,
   isTotpLocked, registerTotpFailure, resetTotpAttempts, TOTP_LOCKOUT_MINUTES,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
@@ -268,7 +268,10 @@ async function handleGoogleCallback(req, res, query) {
     const refCode = cookies[REF_COOKIE];
     if (refCode) {
       const referrer = getUserByReferralCode(refCode);
-      if (referrer) setReferredBy(user.id, referrer.id);
+      if (referrer && setReferredBy(user.id, referrer.id)) {
+        syncWalletPoints(user.id);
+        syncWalletPoints(referrer.id);
+      }
     }
 
     const stage = user.totp_enabled ? 'pending_2fa' : 'needs_2fa_setup';
@@ -379,6 +382,7 @@ async function handlePointsRedeem(req, res) {
 
   try {
     const balance = redeemPoints(user.id, body.puntos, body.motivo);
+    syncWalletPoints(user.id);
     sendJson(res, 200, { ok: true, balance });
   } catch (err) {
     const msg = err.message === 'INSUFFICIENT_BALANCE'
@@ -558,10 +562,19 @@ function handleGoogleWalletPass(req, res) {
       user: { id: user.id, name: user.name, referralCode: user.referral_code },
       points: getPointsBalance(user.id),
     });
+    markWalletSaved(user.id);
     sendJson(res, 200, { ok: true, saveUrl });
   } catch {
     sendJson(res, 500, { ok: false, error: 'No se pudo generar la tarjeta de Google Wallet.' });
   }
+}
+
+// Empuja el saldo actual al pase de Google Wallet ya guardado (si el usuario
+// lo guardó y hay credenciales configuradas). Mejor esfuerzo: nunca bloquea
+// ni hace fallar la respuesta HTTP que la disparó.
+function syncWalletPoints(userId) {
+  if (!googleWallet.isConfigured()) return;
+  googleWallet.patchLoyaltyPoints(userId, getPointsBalance(userId));
 }
 
 // ───────────────────────── suscripción pre-apertura (existente) ─────────────────────────
@@ -637,6 +650,7 @@ async function handleAdminPurchaseCreate(req, res) {
   }
 
   const result = addPurchase({ userId: target.id, monto, producto: body.producto });
+  syncWalletPoints(target.id);
   sendJson(res, 201, { ok: true, ...result });
 }
 
@@ -733,7 +747,16 @@ async function handleAdminPromotionCreate(req, res) {
     markPromotionPushed(promotion.id, pushSent);
   }
 
-  sendJson(res, 201, { ok: true, promotion, pushSent });
+  let walletPushSent = 0;
+  if (googleWallet.isConfigured()) {
+    const userIds = listWalletSavedUserIds();
+    const results = await Promise.all(
+      userIds.map((userId) => googleWallet.pushLoyaltyMessage(userId, { header: title, body: promoBody }))
+    );
+    walletPushSent = results.filter((r) => r.ok).length;
+  }
+
+  sendJson(res, 201, { ok: true, promotion, pushSent, walletPushSent });
 }
 
 async function handleAdminPromotionDeactivate(req, res) {

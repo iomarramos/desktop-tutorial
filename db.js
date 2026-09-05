@@ -159,6 +159,7 @@ ensureColumn('promotions', 'ends_at', 'TEXT');
 ensureColumn('promotions', 'publication_code', 'TEXT');
 ensureColumn('sessions', 'totp_attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sessions', 'totp_locked_until', 'TEXT');
+ensureColumn('users', 'wallet_saved_at', 'TEXT');
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
@@ -232,6 +233,8 @@ const deleteAllSessionsForUserStmt = db.prepare('DELETE FROM sessions WHERE user
 const setTotpSecretStmt = db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?');
 const enableTotpStmt = db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = ?');
 const setFamilyGroupStmt = db.prepare('UPDATE users SET family_group_id = ? WHERE id = ?');
+const markWalletSavedStmt = db.prepare("UPDATE users SET wallet_saved_at = datetime('now') WHERE id = ?");
+const listWalletSavedUserIdsStmt = db.prepare('SELECT id FROM users WHERE wallet_saved_at IS NOT NULL');
 
 function upsertGoogleUser({ googleId, email, name, avatarUrl }) {
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -258,6 +261,17 @@ function getUserByEmail(email) {
 
 function getUserByReferralCode(code) {
   return getUserByReferralCodeStmt.get(code);
+}
+
+// Marca que el usuario abrió el link "Guardar en Google Wallet" — es la
+// única señal que tenemos de que su loyaltyObject fue creado del lado de
+// Google (la Wallet API no expone un endpoint para consultarlo).
+function markWalletSaved(userId) {
+  markWalletSavedStmt.run(userId);
+}
+
+function listWalletSavedUserIds() {
+  return listWalletSavedUserIdsStmt.all().map((row) => row.id);
 }
 
 // Solo aplica (y solo paga el bono) la primera vez: setReferredByStmt tiene
@@ -945,6 +959,8 @@ module.exports = {
   setReferredBy,
   setTotpSecret,
   enableTotp,
+  markWalletSaved,
+  listWalletSavedUserIds,
   // sesiones
   createSession,
   getSession,

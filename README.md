@@ -106,7 +106,15 @@ variable de entorno `PORT`).
 - `auth/push.js`: envío de notificaciones Web Push (usa `web-push` para el
   cifrado VAPID/aes128gcm).
 - `auth/googleWallet.js`: construye y firma (RS256) el JWT "Save to Google
-  Wallet" con la tarjeta de fidelidad del cliente.
+  Wallet" con la tarjeta de fidelidad del cliente, y además llama a la
+  **Wallet REST API** (con un access token de service account) para dos
+  cosas más: actualizar el saldo de estrellas en el pase que el cliente ya
+  guardó (cada vez que compra, canjea puntos o gana un referido — no hace
+  falta que vuelva a la web para ver el saldo nuevo), y empujarle un mensaje
+  al pase guardado cuando se publica una promoción nueva (aparece como
+  notificación dentro de la propia app de Google Wallet, además del push
+  del navegador). Todo esto es mejor esfuerzo: si el cliente nunca guardó
+  el pase, la API responde 404 y simplemente se ignora.
 - `public/index.html`: formulario de pre-registro.
 - `public/cuenta.html`: sesión del cliente — login con Google, activación de
   2FA con QR, saldo de estrellas con barra de progreso, canje de puntos,
@@ -342,3 +350,23 @@ docker compose exec app node scripts/backup.js
 No hay backups automáticos/programados — conviene agregar un cron (en el
 host, o un contenedor aparte) que corra ese comando periódicamente y suba
 el resultado a almacenamiento externo (S3, etc.) si esto va a producción real.
+
+## Roadmap: envío de campañas por WhatsApp (planeado, no implementado)
+
+Hoy una promoción se publica por tres canales: popup en la web, notificación
+push del navegador, y mensaje al pase de Google Wallet ya guardado (ver
+`auth/googleWallet.js`). **No hay integración de WhatsApp** — quedó
+pendiente a propósito, porque la opción correcta depende de una decisión de
+negocio (verificación con Meta, costo por mensaje) y no solo de código.
+Opciones evaluadas para cuando se decida implementarlo:
+
+| Opción | Costo | Setup | Notas |
+|---|---|---|---|
+| **WhatsApp Cloud API (Meta)** | Gratis hasta cierto volumen mensual | Requiere verificar el negocio en Meta Business Manager y que Meta apruebe una plantilla de mensaje para envíos "fuera de sesión" (como una promo) | Opción recomendada a mediano plazo si el volumen de clientes crece |
+| **Twilio (WhatsApp Business API)** | De pago desde el primer mensaje | Setup más simple, todo vía API key de Twilio | Útil si se quiere probar rápido sin pasar por la verificación de Meta |
+| **Link `wa.me` manual** | Gratis | Ninguno | No es envío masivo automático: cada promo generaría un link `wa.me/<numero>?text=...` que el negocio comparte a mano (ej. en un estado de WhatsApp) |
+
+Para implementarlo se necesitaría además: guardar el número de teléfono del
+cliente con opt-in explícito (ya existe `telefono` en `subscribers`, pero no
+en `users` — el login con Google no lo pide), y una tabla de plantillas de
+mensaje aprobadas si se usa Cloud API.
