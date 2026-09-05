@@ -14,7 +14,8 @@ const {
   createProduct, listActiveProducts, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
   createProfileField, getProfileFieldByKey, adminListProfileFields,
   updateProfileField, deleteProfileField, getUserProfileValues, getMissingRequiredFields, setUserProfileValues,
-  createPromotion, addPromotionCode, redeemPromotionCode,
+  createPromotion, addPromotionCode, redeemPromotionCode, findActivePromotionByTitle,
+  getPromotionRedeemers, adminPromotionsSummary, adminTopCustomersByPurchases, adminRecurringPromoCustomers,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
   listPromotionsReadyToActivate, markPromotionActivated,
   updatePromotion, deletePromotion,
@@ -812,6 +813,38 @@ function handleAdminPromotionsList(req, res, query) {
   sendJson(res, 200, { ok: true, pushConfigured: push.isConfigured(), ...adminListPromotions(paginationParams(query)) });
 }
 
+function handleAdminPromotionsSummary(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, ...adminPromotionsSummary() });
+}
+
+// Quiénes canjearon esta promoción — "quiénes fueron los elegidos". Los que
+// no canjearon se calculan del lado del cliente restando esta lista del
+// total de usuarios (adminPromotionsSummary ya trae ese total).
+function handleAdminPromotionRedeemers(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  const id = Number(query.get('id'));
+  if (!id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+  sendJson(res, 200, { ok: true, items: getPromotionRedeemers(id) });
+}
+
+function handleAdminTopCustomers(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, {
+    ok: true,
+    ...adminTopCustomersByPurchases({
+      ...paginationParams(query),
+      minCompras: query.get('minCompras'),
+      sortBy: query.get('sortBy') || undefined,
+    }),
+  });
+}
+
+function handleAdminRecurringPromoCustomers(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, ...adminRecurringPromoCustomers(paginationParams(query)) });
+}
+
 // Envía el push (navegador + Google Wallet) de una promoción y la marca
 // como activada. La llama handleAdminPromotionCreate cuando la vigencia ya
 // empezó, y runPromotionScheduler cuando le toca a una programada para
@@ -883,6 +916,18 @@ async function handleAdminPromotionCreate(req, res) {
   const promoBody = String(body.body || '').trim();
   if (!title || !promoBody) {
     return sendJson(res, 400, { ok: false, error: 'La promoción necesita título y texto.' });
+  }
+
+  if (!body.confirmDuplicate) {
+    const existing = findActivePromotionByTitle(title);
+    if (existing) {
+      return sendJson(res, 409, {
+        ok: false,
+        duplicate: true,
+        error: `Ya existe una promoción activa con este título (creada el ${existing.created_at}). Confirma si quieres publicarla de todas formas.`,
+        existingPromotion: { id: existing.id, title: existing.title, publication_code: existing.publication_code, created_at: existing.created_at },
+      });
+    }
   }
 
   const productIds = Array.isArray(body.productIds) ? body.productIds.map(Number).filter(Boolean) : [];
@@ -1314,6 +1359,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/admin/stats/traffic') return handleAdminTraffic(req, res);
     if (req.method === 'GET' && url === '/api/admin/promotions') return handleAdminPromotionsList(req, res, query);
     if (req.method === 'POST' && url === '/api/admin/promotions') return handleAdminPromotionCreate(req, res);
+    if (req.method === 'GET' && url === '/api/admin/promotions/summary') return handleAdminPromotionsSummary(req, res);
+    if (req.method === 'GET' && url === '/api/admin/promotions/redeemers') return handleAdminPromotionRedeemers(req, res, query);
+    if (req.method === 'GET' && url === '/api/admin/reports/top-customers') return handleAdminTopCustomers(req, res, query);
+    if (req.method === 'GET' && url === '/api/admin/reports/recurring-promo-customers') return handleAdminRecurringPromoCustomers(req, res, query);
     if (req.method === 'POST' && url === '/api/admin/promotions/deactivate') return handleAdminPromotionDeactivate(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/update') return handleAdminPromotionUpdate(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/delete') return handleAdminPromotionDelete(req, res);

@@ -41,6 +41,10 @@ main{max-width:1100px;margin:0 auto;padding:2.4rem 5vw 5rem}
 h2{font-family:var(--fd);font-weight:900;font-size:1.15rem;margin-bottom:1rem}
 
 .toolbar{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:1rem}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem}
+.stat-box{background:var(--navy);color:#fff;border-radius:14px;padding:1rem 1.2rem;border-bottom:4px solid var(--yellow)}
+.stat-box b{display:block;font-family:var(--fd);font-size:1.6rem;font-weight:900;color:var(--yellow)}
+.stat-box span{font-size:.72rem;letter-spacing:.04em;opacity:.85}
 .search-input{padding:.65rem 1rem;border-radius:12px;border:2px solid rgba(13,27,75,.15);font-size:.85rem;min-width:220px}
 
 table{width:100%;border-collapse:collapse;font-size:.85rem}
@@ -116,6 +120,7 @@ textarea{resize:vertical;min-height:70px}
     <button class="tab-btn" data-tab="compras">Compras</button>
     <button class="tab-btn" data-tab="productos">Productos</button>
     <button class="tab-btn" data-tab="promos">Promociones</button>
+    <button class="tab-btn" data-tab="reportes">Reportes</button>
     <button class="tab-btn" data-tab="perfil">Campos de perfil</button>
     <button class="tab-btn" data-tab="suscriptores">Pre-registro</button>
   </div>
@@ -285,6 +290,47 @@ textarea{resize:vertical;min-height:70px}
     </div>
   </div>
 
+  <div id="tab-reportes" class="tab-panel hidden">
+    <div class="card">
+      <h2>Resumen de promociones</h2>
+      <div class="stat-grid" id="reportes-summary"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">Top clientes por compras</h2>
+        <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+          <input type="text" class="search-input" id="topcli-search" placeholder="Buscar por nombre o email…">
+          <input type="number" id="topcli-min" min="1" value="1" placeholder="Mín. compras" style="width:110px">
+          <select id="topcli-sort">
+            <option value="num_compras">Ordenar: más compras</option>
+            <option value="total_gastado">Ordenar: más gastado</option>
+            <option value="comprasPorSemana">Ordenar: más frecuente</option>
+          </select>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Cliente</th><th>Compras</th><th>Total gastado</th><th>Compras / semana</th></tr></thead>
+        <tbody id="topcli-body"></tbody>
+      </table>
+      <p class="empty hidden" id="topcli-empty">Sin compras registradas todavía.</p>
+      <div class="pager" id="topcli-pager"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">Clientes recurrentes en promociones</h2>
+        <input type="text" class="search-input" id="recur-search" placeholder="Buscar por nombre o email…">
+      </div>
+      <table>
+        <thead><tr><th>Cliente</th><th>Promociones distintas</th><th>Canjes totales</th></tr></thead>
+        <tbody id="recur-body"></tbody>
+      </table>
+      <p class="empty hidden" id="recur-empty">Nadie ha canjeado una promoción todavía.</p>
+      <div class="pager" id="recur-pager"></div>
+    </div>
+  </div>
+
   <div id="tab-perfil" class="tab-panel hidden">
     <div class="card">
       <h2>Nuevo campo de perfil</h2>
@@ -350,8 +396,8 @@ function escapeHtml(value){
 }
 
 let ADMIN_TOKEN = sessionStorage.getItem('admin_token') || '';
-const pageState = { usuarios: 1, referidos: 1, familias: 1, compras: 1, promos: 1 };
-const searchState = { usuarios: '', referidos: '', compras: '' };
+const pageState = { usuarios: 1, referidos: 1, familias: 1, compras: 1, promos: 1, topcli: 1, recur: 1 };
+const searchState = { usuarios: '', referidos: '', compras: '', topcli: '', recur: '' };
 const LIMIT = 15;
 
 async function adminFetch(path){
@@ -425,6 +471,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'compras') loadCompras();
     if (btn.dataset.tab === 'productos') loadProductos();
     if (btn.dataset.tab === 'promos') { loadPromos(); loadProductCheckboxes(); }
+    if (btn.dataset.tab === 'reportes') { loadReportesSummary(); loadTopClientes(1); loadRecurrentes(1); }
     if (btn.dataset.tab === 'perfil') loadPerfilFields();
     if (btn.dataset.tab === 'suscriptores') loadSuscriptores();
   });
@@ -639,7 +686,8 @@ async function loadPromos(page = pageState.promos){
           : `<span class="pill warn">📅 Programada — se enviará el ${fmtDate(p.starts_at)}</span>`}
         <p style="font-size:.85rem;margin-top:.3rem">${escapeHtml(p.body)}</p>
         <p style="font-size:.72rem;opacity:.6;margin-top:.3rem">
-          Vigencia: ${fmtDate(p.starts_at)} → ${fmtDate(p.ends_at)} · enviada a ${p.pushed_to} dispositivos
+          Vigencia: ${fmtDate(p.starts_at)} → ${fmtDate(p.ends_at)} · enviada a ${p.pushed_to} dispositivos ·
+          canjeada por ${p.redeemedCount || 0} cliente(s)
         </p>
         <div style="margin-top:.4rem">${productChips}</div>
         <div id="codes-${p.id}">${codesHtml}</div>
@@ -656,6 +704,17 @@ async function loadPromos(page = pageState.promos){
     actions.style.display = 'flex';
     actions.style.flexDirection = 'column';
     actions.style.gap = '.4rem';
+
+    const redeemersBtn = document.createElement('button');
+    redeemersBtn.className = 'btn ghost small';
+    redeemersBtn.textContent = 'Ver quiénes canjearon';
+    redeemersBtn.onclick = async () => {
+      const data = await adminFetch(`/api/admin/promotions/redeemers?id=${p.id}`);
+      if (!data.items || data.items.length === 0) { alert('Todavía nadie ha canjeado esta promoción.'); return; }
+      const lines = data.items.map(r => `• ${r.name} (${r.email}) — código ${r.code}, ${fmtDate(r.redeemed_at)}`);
+      alert(`Canjearon "${p.title}":\n\n${lines.join('\n')}`);
+    };
+    actions.appendChild(redeemersBtn);
 
     const editBtn = document.createElement('button');
     editBtn.className = 'btn ghost small';
@@ -709,7 +768,7 @@ async function loadPromos(page = pageState.promos){
   renderPager('promos-pager', data.page, data.total, data.limit, loadPromos);
 }
 
-document.getElementById('promo-submit-btn').addEventListener('click', async () => {
+async function submitPromotion(confirmDuplicate){
   const title = document.getElementById('promo-title').value.trim();
   const body = document.getElementById('promo-body').value.trim();
   const photoUrl = document.getElementById('promo-photo').value.trim();
@@ -717,8 +776,15 @@ document.getElementById('promo-submit-btn').addEventListener('click', async () =
   const endsAt = document.getElementById('promo-ends').value;
   const productIds = [...document.querySelectorAll('#promo-products-checkboxes input:checked')].map(i => Number(i.value));
   if (!title || !body) { setMsg('promo-msg', 'error', 'Completa título y mensaje.'); return; }
-  const { ok, data } = await adminPost('/api/admin/promotions', { title, body, photoUrl, startsAt, endsAt, productIds });
+
+  const { ok, data } = await adminPost('/api/admin/promotions', { title, body, photoUrl, startsAt, endsAt, productIds, confirmDuplicate });
+  if (!ok && data.duplicate) {
+    if (confirm(`${data.error}\n\n¿Publicar de todas formas?`)) return submitPromotion(true);
+    setMsg('promo-msg', 'error', 'No se publicó — ya existe una promoción activa con ese título.');
+    return;
+  }
   if (!ok) { setMsg('promo-msg', 'error', data.error || 'No se pudo publicar.'); return; }
+
   const pushMsg = data.scheduled
     ? `📅 Programada (${data.promotion.publication_code}) — se avisará por push y Wallet el ${data.promotion.starts_at}.`
     : `✅ Publicada (${data.promotion.publication_code}). Push enviado a ${data.pushSent} dispositivo(s) y ${data.walletPushSent} wallet(s).`;
@@ -730,7 +796,67 @@ document.getElementById('promo-submit-btn').addEventListener('click', async () =
   document.getElementById('promo-ends').value = '';
   document.querySelectorAll('#promo-products-checkboxes input:checked').forEach(i => { i.checked = false; });
   loadPromos(1);
-});
+}
+
+document.getElementById('promo-submit-btn').addEventListener('click', () => submitPromotion(false));
+
+// ═══ Reportes ═══
+
+async function loadReportesSummary(){
+  const data = await adminFetch('/api/admin/promotions/summary');
+  document.getElementById('reportes-summary').innerHTML = `
+    <div class="stat-box"><b>${data.totalActivePromotions}</b><span>PROMOCIONES ACTIVAS</span></div>
+    <div class="stat-box"><b>${data.totalUsers}</b><span>CLIENTES EN LA WALLET</span></div>
+    <div class="stat-box"><b>${data.totalRedeemers}</b><span>CANJEARON ALGUNA PROMO</span></div>
+    <div class="stat-box"><b>${data.totalNeverRedeemed}</b><span>NUNCA CANJEARON</span></div>
+    <div class="stat-box"><b>${data.redemptionRatePct}%</b><span>TASA DE CANJE</span></div>
+  `;
+}
+
+async function loadTopClientes(page = pageState.topcli){
+  pageState.topcli = page;
+  const q = searchState.topcli ? `&q=${encodeURIComponent(searchState.topcli)}` : '';
+  const minCompras = document.getElementById('topcli-min').value || 1;
+  const sortBy = document.getElementById('topcli-sort').value;
+  const data = await adminFetch(`/api/admin/reports/top-customers?page=${page}&limit=15&minCompras=${minCompras}&sortBy=${sortBy}${q}`);
+  const body = document.getElementById('topcli-body');
+  body.innerHTML = '';
+  document.getElementById('topcli-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(c => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${escapeHtml(c.name)} (${escapeHtml(c.email)})</td><td>${c.num_compras}</td>
+      <td>S/ ${Number(c.total_gastado).toFixed(2)}</td><td>${c.comprasPorSemana != null ? c.comprasPorSemana : '—'}</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('topcli-pager', data.page, data.total, data.limit, loadTopClientes);
+}
+
+async function loadRecurrentes(page = pageState.recur){
+  pageState.recur = page;
+  const q = searchState.recur ? `&q=${encodeURIComponent(searchState.recur)}` : '';
+  const data = await adminFetch(`/api/admin/reports/recurring-promo-customers?page=${page}&limit=15${q}`);
+  const body = document.getElementById('recur-body');
+  body.innerHTML = '';
+  document.getElementById('recur-empty').classList.toggle('hidden', data.items.length > 0);
+  data.items.forEach(c => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${escapeHtml(c.name)} (${escapeHtml(c.email)})</td><td>${c.promos_canjeadas}</td><td>${c.total_canjes}</td>`;
+    body.appendChild(tr);
+  });
+  renderPager('recur-pager', data.page, data.total, data.limit, loadRecurrentes);
+}
+
+document.getElementById('topcli-search').addEventListener('input', debounce((e) => {
+  searchState.topcli = e.target.value.trim();
+  loadTopClientes(1);
+}, 350));
+document.getElementById('topcli-min').addEventListener('input', debounce(() => loadTopClientes(1), 350));
+document.getElementById('topcli-sort').addEventListener('change', () => loadTopClientes(1));
+
+document.getElementById('recur-search').addEventListener('input', debounce((e) => {
+  searchState.recur = e.target.value.trim();
+  loadRecurrentes(1);
+}, 350));
 
 // ═══ Productos ═══
 

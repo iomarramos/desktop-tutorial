@@ -417,3 +417,80 @@ test('adminListPromotions: cada promoción trae solo sus propios códigos', () =
   assert.deepEqual(a.codes.map((c) => c.code), ['BATCHA']);
   assert.deepEqual(b.codes.map((c) => c.code).sort(), ['BATCHB1', 'BATCHB2']);
 });
+
+// ───────────────────────── duplicidad de promociones ─────────────────────────
+
+test('promociones: findActivePromotionByTitle detecta duplicados sin importar mayúsculas, tildes o espacios', () => {
+  db.createPromotion({ title: '2x1 en Frappés', body: 'x' });
+  assert.ok(db.findActivePromotionByTitle('2x1 en Frappés'));
+  assert.ok(db.findActivePromotionByTitle('  2X1 EN FRAPPÉS  '));
+  assert.ok(!db.findActivePromotionByTitle('Una promo totalmente distinta'));
+});
+
+test('promociones: una promoción desactivada no cuenta como duplicado', () => {
+  const promo = db.createPromotion({ title: 'Promo a desactivar', body: 'x' });
+  db.deactivatePromotion(promo.id);
+  assert.ok(!db.findActivePromotionByTitle('Promo a desactivar'));
+});
+
+// ───────────────────────── reportes: alcance de promociones ─────────────────────────
+
+test('adminPromotionsSummary + getPromotionRedeemers: cuenta canjeadores y no-canjeadores', () => {
+  const a = makeUser('Reporte A');
+  const b = makeUser('Reporte B');
+  const promo = db.createPromotion({ title: 'Reporte promo', body: 'x' });
+  db.addPromotionCode(promo.id, { code: 'REPORTE1', label: null, maxUses: null });
+  db.redeemPromotionCode('REPORTE1', a.id);
+
+  const redeemers = db.getPromotionRedeemers(promo.id);
+  assert.equal(redeemers.length, 1);
+  assert.equal(redeemers[0].name, 'Reporte A');
+
+  const summary = db.adminPromotionsSummary();
+  assert.ok(summary.totalUsers >= 2);
+  assert.ok(summary.totalRedeemers >= 1);
+  assert.equal(summary.totalNeverRedeemed, summary.totalUsers - summary.totalRedeemers);
+});
+
+test('adminListPromotions: redeemedCount cuenta clientes distintos, no canjes totales', () => {
+  const a = makeUser('Distinct A');
+  const b = makeUser('Distinct B');
+  const promo = db.createPromotion({ title: 'Distinct promo', body: 'x' });
+  db.addPromotionCode(promo.id, { code: 'DISTINCT1', label: null, maxUses: null });
+  db.addPromotionCode(promo.id, { code: 'DISTINCT2', label: null, maxUses: null });
+  db.redeemPromotionCode('DISTINCT1', a.id);
+  db.redeemPromotionCode('DISTINCT2', b.id);
+
+  const item = db.adminListPromotions({ limit: 50 }).items.find((p) => p.id === promo.id);
+  assert.equal(item.redeemedCount, 2);
+});
+
+// ───────────────────────── reportes: clientes ─────────────────────────
+
+test('adminTopCustomersByPurchases: ordena por compras y respeta el mínimo', () => {
+  const frecuente = makeUser('Top frecuente');
+  const ocasional = makeUser('Top ocasional');
+  for (let i = 0; i < 3; i++) db.addPurchase({ userId: frecuente.id, monto: 10, producto: 'x' });
+  db.addPurchase({ userId: ocasional.id, monto: 10, producto: 'x' });
+
+  const all = db.adminTopCustomersByPurchases({ limit: 50, minCompras: 1 });
+  const names = all.items.map((c) => c.name);
+  assert.ok(names.indexOf('Top frecuente') < names.indexOf('Top ocasional'));
+
+  const filtered = db.adminTopCustomersByPurchases({ limit: 50, minCompras: 2 });
+  assert.ok(!filtered.items.some((c) => c.name === 'Top ocasional'));
+});
+
+test('adminRecurringPromoCustomers: cuenta promociones DISTINTAS, no canjes totales', () => {
+  const user = makeUser('Recurrente test');
+  const promoA = db.createPromotion({ title: 'Recurrente A', body: 'x' });
+  const promoB = db.createPromotion({ title: 'Recurrente B', body: 'x' });
+  db.addPromotionCode(promoA.id, { code: 'RECA', label: null, maxUses: null });
+  db.addPromotionCode(promoB.id, { code: 'RECB', label: null, maxUses: null });
+  db.redeemPromotionCode('RECA', user.id);
+  db.redeemPromotionCode('RECB', user.id);
+
+  const item = db.adminRecurringPromoCustomers({ limit: 50 }).items.find((c) => c.id === user.id);
+  assert.equal(item.promos_canjeadas, 2);
+  assert.equal(item.total_canjes, 2);
+});

@@ -271,13 +271,16 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `GET /api/admin/promotions?page=&limit=` — Promociones publicadas
   (activas e inactivas), con sus productos y códigos de canje.
 - `POST /api/admin/promotions` — Body
-  `{ title, body, photoUrl, startsAt, endsAt, productIds }`. Crea una
-  promoción (aparece como popup/banner en `/` y `/cuenta.html` según su
-  vigencia) y genera el `publication_code`. Si `startsAt` es hoy/pasado o
-  viene vacío, la envía por push (navegador + Google Wallet) de inmediato;
-  si es una fecha futura, queda **programada** (`scheduled: true` en la
-  respuesta) y el push se dispara solo cuando llegue el día — ver
-  "Promociones programadas" abajo.
+  `{ title, body, photoUrl, startsAt, endsAt, productIds, confirmDuplicate }`.
+  Crea una promoción (aparece como popup/banner en `/` y `/cuenta.html`
+  según su vigencia) y genera el `publication_code`. Si ya existe una
+  promoción **activa** con el mismo título, responde 409 con
+  `{ duplicate: true, existingPromotion }` a menos que se mande
+  `confirmDuplicate: true`. Si `startsAt` es hoy/pasado o viene vacío, la
+  envía por push (navegador + Google Wallet) de inmediato; si es una fecha
+  futura, queda **programada** (`scheduled: true` en la respuesta) y el
+  push se dispara solo cuando llegue el día — ver "Promociones programadas"
+  abajo.
 - `POST /api/admin/promotions/deactivate` — Body `{ id }`. Deja de mostrarla.
 - `POST /api/admin/promotions/update` — Body
   `{ id, title, body, photoUrl, startsAt, endsAt, productIds }` (todos
@@ -288,6 +291,16 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `POST /api/admin/promotions/codes` — Body
   `{ promotionId, code, label, maxUses }`. Agrega un código de canje a la
   promoción (si `code` viene vacío, se genera uno al azar).
+- `GET /api/admin/promotions/summary` — Resumen general: promociones
+  activas, clientes en la wallet, cuántos canjearon alguna promoción,
+  cuántos nunca canjearon, tasa de canje.
+- `GET /api/admin/promotions/redeemers?id=` — Quién canjeó una promoción
+  específica (nombre, email, código usado, fecha).
+- `GET /api/admin/reports/top-customers?page=&limit=&q=&minCompras=&sortBy=`
+  — Clientes ordenados por compras, gasto total o frecuencia
+  (`sortBy`: `num_compras` | `total_gastado` | `comprasPorSemana`).
+- `GET /api/admin/reports/recurring-promo-customers?page=&limit=&q=` —
+  Clientes ordenados por cuántas promociones *distintas* canjearon.
 - `GET /api/admin/products?page=&limit=` — Catálogo paginado.
 - `GET /api/admin/products/active` — Catálogo activo sin paginar (para el
   selector de productos al crear una promoción).
@@ -424,6 +437,34 @@ docker compose exec app node scripts/backup.js
 No hay backups automáticos/programados — conviene agregar un cron (en el
 host, o un contenedor aparte) que corra ese comando periódicamente y suba
 el resultado a almacenamiento externo (S3, etc.) si esto va a producción real.
+
+## Reportes y duplicidad de promociones
+
+**Duplicidad**: al publicar una promoción, si ya existe una **activa** con
+el mismo título (sin importar mayúsculas, tildes o espacios), el admin
+recibe un aviso con la fecha de la que ya existe y debe confirmar
+explícitamente ("¿Publicar de todas formas?") antes de seguir — evita que
+un doble clic o un olvido publique la misma promo dos veces. La comparación
+se hace en JavaScript, no con `LOWER()` de SQLite, porque esa función solo
+pliega mayúsculas ASCII (no reconocería "FRAPPÉS" como igual a "frappés").
+
+**Pestaña "Reportes"** en el admin:
+- Resumen: promociones activas, clientes en la wallet, cuántos canjearon
+  alguna promoción alguna vez, cuántos nunca canjearon, tasa de canje
+  global.
+- **Top clientes por compras**: nombre, número de compras, total gastado,
+  compras por semana (calculado entre su primera y su última compra — con
+  una sola compra no hay ventana de tiempo real, así que se muestra `—`).
+  Filtro personalizable: buscar por nombre/email, mínimo de compras para
+  aparecer en la lista, y ordenar por compras / gasto / frecuencia.
+- **Clientes recurrentes en promociones**: cuántas promociones *distintas*
+  canjeó cada cliente (no cuántas veces en total) — para identificar a
+  quienes repiten, no solo a quienes canjearon mucho una sola vez.
+
+**En la pestaña Promociones**, cada promoción ahora muestra "canjeada por
+N cliente(s)" y un botón **Ver quiénes canjearon** con el detalle (nombre,
+email, código usado, fecha). Quiénes *no* canjearon se calculan restando
+esa lista del total de clientes (el resumen ya trae ese número).
 
 ## Roadmap: envío de campañas por WhatsApp (planeado, no implementado)
 

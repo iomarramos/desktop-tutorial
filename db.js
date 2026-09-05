@@ -899,6 +899,21 @@ function hydratePromotionPublic(promotion) {
   return { ...promotion, products: listPromotionProductsStmt.all(promotion.id) };
 }
 
+const listActivePromotionTitlesStmt = db.prepare('SELECT * FROM promotions WHERE active = 1');
+
+// Un doble clic al publicar, o simplemente olvidar que ya existe, puede
+// crear la misma promoción dos veces — esto la detecta (mismo título,
+// insensible a mayúsculas/acentos/espacios) entre las promociones activas,
+// para que el admin decida si de verdad quiere publicarla de nuevo.
+// La comparación se hace en JS (no con LOWER() de SQLite) porque LOWER()
+// solo pliega mayúsculas ASCII — "FRAPPÉS" no lo reconocería igual a
+// "frappés" si se comparara dentro de la consulta.
+function findActivePromotionByTitle(title) {
+  const normalized = String(title || '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  return listActivePromotionTitlesStmt.all().find((p) => p.title.trim().toLowerCase() === normalized);
+}
+
 function createPromotion({ title, body, photoUrl, startsAt, endsAt, productIds = [] }) {
   const info = insertPromotionStmt.run(title, body, photoUrl || null, startsAt || null, endsAt || null, null);
   const id = info.lastInsertRowid;
@@ -973,17 +988,71 @@ function codesByPromotionId(promotionIds) {
   return map;
 }
 
+// Cuántos clientes DISTINTOS canjearon algún código de cada promoción de la
+// página, en una sola consulta batch (igual que products/codesByPromotionId).
+function redeemedCountByPromotionId(promotionIds) {
+  const map = new Map();
+  if (promotionIds.length === 0) return map;
+  const placeholders = promotionIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT pc.promotion_id AS promotion_id, COUNT(DISTINCT pr.user_id) AS redeemed_count
+     FROM promotion_redemptions pr
+     JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+     WHERE pc.promotion_id IN (${placeholders})
+     GROUP BY pc.promotion_id`
+  ).all(...promotionIds);
+  for (const row of rows) map.set(row.promotion_id, row.redeemed_count);
+  return map;
+}
+
+const getPromotionRedeemersStmt = db.prepare(
+  `SELECT u.id AS user_id, u.name, u.email, pc.code, pr.created_at AS redeemed_at
+   FROM promotion_redemptions pr
+   JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+   JOIN users u ON u.id = pr.user_id
+   WHERE pc.promotion_id = ?
+   ORDER BY pr.created_at DESC`
+);
+
+// Quiénes canjearon esta promoción — para el admin, "quiénes fueron los
+// elegidos". Los que NO canjearon se obtienen restando esta lista del
+// total de clientes (adminPromotionsSummary / adminListUsers).
+function getPromotionRedeemers(promotionId) {
+  return getPromotionRedeemersStmt.all(promotionId);
+}
+
+const activePromotionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM promotions WHERE active = 1');
+const distinctPromoRedeemersStmt = db.prepare('SELECT COUNT(DISTINCT user_id) AS total FROM promotion_redemptions');
+
+// Resumen general para el tope del dashboard de promociones: cuántas
+// promociones activas hay, a cuántos clientes se les podría llegar, y de
+// esos cuántos ya canjearon alguna promoción alguna vez.
+function adminPromotionsSummary() {
+  const totalActivePromotions = activePromotionsCountStmt.get().total;
+  const totalUsers = adminUsersCountStmt.get().total;
+  const totalRedeemers = distinctPromoRedeemersStmt.get().total;
+  return {
+    totalActivePromotions,
+    totalUsers,
+    totalRedeemers,
+    totalNeverRedeemed: Math.max(totalUsers - totalRedeemers, 0),
+    redemptionRatePct: totalUsers > 0 ? Math.round((totalRedeemers / totalUsers) * 1000) / 10 : 0,
+  };
+}
+
 function adminListPromotions({ limit = 20, page = 1 } = {}) {
   const p = paginate({ limit, page });
   const promotions = adminListPromotionsStmt.all(p.limit, p.offset);
   const ids = promotions.map((promo) => promo.id);
   const productsMap = productsByPromotionId(ids);
   const codesMap = codesByPromotionId(ids);
+  const redeemedMap = redeemedCountByPromotionId(ids);
   return {
     items: promotions.map((promo) => ({
       ...promo,
       products: productsMap.get(promo.id) || [],
       codes: codesMap.get(promo.id) || [],
+      redeemedCount: redeemedMap.get(promo.id) || 0,
     })),
     total: adminPromotionsCountStmt.get().total,
     page: p.page,
@@ -1252,6 +1321,89 @@ function adminListPurchases({ limit = 20, page = 1, q } = {}) {
   };
 }
 
+// ───────────────────────── reportes: clientes ─────────────────────────
+
+const topCustomersBaseStmt = db.prepare(`
+  SELECT u.id, u.name, u.email,
+         COUNT(p.id) AS num_compras,
+         COALESCE(SUM(p.monto), 0) AS total_gastado,
+         MIN(p.created_at) AS primera_compra,
+         MAX(p.created_at) AS ultima_compra
+  FROM users u
+  JOIN purchases p ON p.user_id = u.id
+  GROUP BY u.id
+`);
+const topCustomersSearchStmt = db.prepare(`
+  SELECT u.id, u.name, u.email,
+         COUNT(p.id) AS num_compras,
+         COALESCE(SUM(p.monto), 0) AS total_gastado,
+         MIN(p.created_at) AS primera_compra,
+         MAX(p.created_at) AS ultima_compra
+  FROM users u
+  JOIN purchases p ON p.user_id = u.id
+  WHERE u.name LIKE ? OR u.email LIKE ?
+  GROUP BY u.id
+`);
+
+// Compras por semana entre la primera y la última compra — null si solo
+// tiene una compra (no hay ventana de tiempo real para medir frecuencia).
+function withPurchaseFrequency(row) {
+  if (row.num_compras < 2) return { ...row, comprasPorSemana: null };
+  const days = (sqliteUtcToDate(row.ultima_compra) - sqliteUtcToDate(row.primera_compra)) / 86400_000;
+  const weeks = Math.max(days / 7, 1);
+  return { ...row, comprasPorSemana: Math.round((row.num_compras / weeks) * 100) / 100 };
+}
+
+// Filtro personalizable: buscar por nombre/email (q), mínimo de compras
+// para aparecer en la lista, y ordenar por compras / gasto total / frecuencia.
+function adminTopCustomersByPurchases({ limit = 20, page = 1, q, minCompras = 1, sortBy = 'num_compras' } = {}) {
+  const p = paginate({ limit, page });
+  const rows = q
+    ? topCustomersSearchStmt.all(`%${q}%`, `%${q}%`)
+    : topCustomersBaseStmt.all();
+
+  const min = Math.max(Number(minCompras) || 1, 1);
+  const items = rows.filter((r) => r.num_compras >= min).map(withPurchaseFrequency);
+
+  const sortKey = ['num_compras', 'total_gastado', 'comprasPorSemana'].includes(sortBy) ? sortBy : 'num_compras';
+  items.sort((a, b) => (b[sortKey] ?? 0) - (a[sortKey] ?? 0));
+
+  return { items: items.slice(p.offset, p.offset + p.limit), total: items.length, page: p.page, limit: p.limit };
+}
+
+const recurringPromoCustomersStmt = db.prepare(`
+  SELECT u.id, u.name, u.email,
+         COUNT(DISTINCT pc.promotion_id) AS promos_canjeadas,
+         COUNT(*) AS total_canjes
+  FROM promotion_redemptions pr
+  JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+  JOIN users u ON u.id = pr.user_id
+  GROUP BY u.id
+`);
+const recurringPromoCustomersSearchStmt = db.prepare(`
+  SELECT u.id, u.name, u.email,
+         COUNT(DISTINCT pc.promotion_id) AS promos_canjeadas,
+         COUNT(*) AS total_canjes
+  FROM promotion_redemptions pr
+  JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+  JOIN users u ON u.id = pr.user_id
+  WHERE u.name LIKE ? OR u.email LIKE ?
+  GROUP BY u.id
+`);
+
+// Clientes recurrentes: los que canjearon más promociones DISTINTAS, no
+// solo más veces la misma.
+function adminRecurringPromoCustomers({ limit = 20, page = 1, q } = {}) {
+  const p = paginate({ limit, page });
+  const rows = q
+    ? recurringPromoCustomersSearchStmt.all(`%${q}%`, `%${q}%`)
+    : recurringPromoCustomersStmt.all();
+  const sorted = [...rows].sort(
+    (a, b) => b.promos_canjeadas - a.promos_canjeadas || b.total_canjes - a.total_canjes
+  );
+  return { items: sorted.slice(p.offset, p.offset + p.limit), total: sorted.length, page: p.page, limit: p.limit };
+}
+
 const trafficByHourStmt = db.prepare(
   `SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hora, COUNT(*) AS total, COALESCE(SUM(monto),0) AS monto
    FROM purchases GROUP BY hora ORDER BY hora`
@@ -1364,6 +1516,9 @@ module.exports = {
   setUserProfileValues,
   // promociones
   createPromotion,
+  findActivePromotionByTitle,
+  getPromotionRedeemers,
+  adminPromotionsSummary,
   addPromotionCode,
   redeemPromotionCode,
   listActivePromotions,
@@ -1385,6 +1540,8 @@ module.exports = {
   adminListReferrals,
   adminListFamilyGroups,
   adminListPurchases,
+  adminTopCustomersByPurchases,
+  adminRecurringPromoCustomers,
   adminTrafficStats,
   adminAllUsers,
   adminAllPurchases,
