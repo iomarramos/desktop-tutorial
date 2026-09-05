@@ -4,19 +4,24 @@ Sitio de **DESENCAJADO — Papas y Café** (Huaraz) con dos partes:
 
 1. **Pre-registro** para la apertura (nombre, teléfono, DNI) — igual que antes.
 2. **Wallet de fidelidad**: login con Google, verificación en dos pasos (2FA)
-   por código QR, estrellas por consumo canjeables más adelante (con barra de
-   progreso hacia la próxima recompensa), código de referidos, cuentas
-   familiares/compartidas, tarjeta real de **Google Wallet** y notificaciones
-   **push** de promociones.
+   por código QR (con bloqueo tras varios intentos fallidos), estrellas por
+   consumo canjeables más adelante (con barra de progreso hacia la próxima
+   recompensa), código de referidos **con bono de puntos** para quien refiere
+   y para el referido, cuentas familiares/compartidas (crear, unirse, salir,
+   expulsar miembros), tarjeta real de **Google Wallet**, notificaciones
+   **push** de promociones, y cierre de sesión en todos los dispositivos.
 3. **Panel de administrador**: tráfico de consumo por horario, usuarios y su
-   wallet (con buscador y exportación a CSV), afiliados, grupos compartidos,
-   registro de compras desde un formulario, **catálogo de productos** y
-   publicación de **promociones completas** (foto, vigencia, productos
-   asociados, código de publicación autogenerado y códigos de canje por
-   sucursal/tanda con límite de usos) con banner + push.
+   wallet (con buscador y exportación a CSV, y botón para forzar el cierre
+   de sesión de un cliente), afiliados, grupos compartidos, registro de
+   compras desde un formulario, **catálogo de productos** (crear/editar/
+   desactivar/eliminar) y **promociones completas** (foto, vigencia,
+   productos asociados, código de publicación autogenerado, códigos de
+   canje por sucursal/tanda con límite de usos, editar/desactivar/eliminar)
+   con banner + popup + push.
 
 Todo corre en un servidor HTTP plano (sin frameworks) con persistencia en
-SQLite.
+SQLite, con tests automatizados (`node:test`, sin dependencias), CI en
+GitHub Actions, y listo para correr en Docker.
 
 ## Requisitos
 
@@ -178,6 +183,12 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `POST /api/points/redeem` — Body `{ puntos, motivo }`. Canjea estrellas.
 - `POST /api/family/create` — Body `{ name }`. Crea grupo familiar/compartido.
 - `POST /api/family/join` — Body `{ inviteCode }`. Se une a un grupo.
+- `POST /api/family/leave` — Sale del grupo. Si el que sale es el dueño, el
+  grupo se disuelve para todos (no hay a quién transferirlo).
+- `POST /api/family/remove-member` — Body `{ userId }`. Solo el dueño puede
+  expulsar a otro miembro.
+- `POST /api/logout-all` — Cierra la sesión actual y todas las demás abiertas
+  del usuario (otros dispositivos/navegadores).
 - `GET /api/promotions` — Promociones activas y vigentes (público, no
   requiere sesión — se usa tanto en `/` como en `/cuenta.html` para mostrar
   el popup/banner). No incluye los códigos de canje.
@@ -212,6 +223,12 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
   por push a todos los dispositivos suscritos si `VAPID_*` está configurado.
   Genera automáticamente el `publication_code`.
 - `POST /api/admin/promotions/deactivate` — Body `{ id }`. Deja de mostrarla.
+- `POST /api/admin/promotions/update` — Body
+  `{ id, title, body, photoUrl, startsAt, endsAt, productIds }` (todos
+  opcionales salvo `id`). Edita una promoción existente.
+- `POST /api/admin/promotions/delete` — Body `{ id }`. Borrado real; falla
+  con un mensaje claro si la promoción ya tiene canjes registrados (en ese
+  caso hay que desactivarla en vez de borrarla, para no perder el historial).
 - `POST /api/admin/promotions/codes` — Body
   `{ promotionId, code, label, maxUses }`. Agrega un código de canje a la
   promoción (si `code` viene vacío, se genera uno al azar).
@@ -220,6 +237,12 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
   selector de productos al crear una promoción).
 - `POST /api/admin/products` — Body `{ name, photoUrl, price }`.
 - `POST /api/admin/products/deactivate` — Body `{ id }`.
+- `POST /api/admin/products/update` — Body `{ id, name, photoUrl, price }`.
+- `POST /api/admin/products/delete` — Body `{ id }`. Borrado real; falla si
+  el producto está asociado a alguna promoción (desactivarlo en ese caso).
+- `POST /api/admin/users/force-logout` — Body `{ email }`. Cierra la sesión
+  de ese cliente en todos sus dispositivos (celular perdido/robado, cuenta
+  comprometida, etc.).
 - `GET /api/admin/export/users.csv` — Exporta todos los usuarios a CSV.
 - `GET /api/admin/export/purchases.csv` — Exporta todas las compras a CSV.
 - `GET /api/admin/export/referrals.csv` — Exporta todos los referidos a CSV.
@@ -231,3 +254,87 @@ curl -H "x-admin-token: un-token-secreto" \
   -d '{"email":"cliente@gmail.com","monto":25,"producto":"Frappé"}' \
   http://localhost:3000/api/admin/purchases
 ```
+
+## Referidos
+
+Cuando alguien se registra usando el enlace de referido de otro cliente
+(`?ref=CODIGO`), al vincularse la cuenta se pagan dos bonos de una sola vez
+(no se repiten si el mismo referido se "re-vincula"):
+
+- `REFERRAL_BONUS_POINTS` (default 20) para quien refirió.
+- `REFERRAL_WELCOME_POINTS` (default 10) para el que se registró.
+
+Poner cualquiera de las dos en `0` la desactiva.
+
+## Seguridad
+
+- **Bloqueo de intentos de 2FA**: tras `TOTP_MAX_ATTEMPTS` códigos
+  incorrectos seguidos (default 5) la sesión queda bloqueada
+  `TOTP_LOCKOUT_MINUTES` minutos (default 5) antes de poder reintentar. El
+  contador se guarda por sesión en la tabla `sessions` y se resetea al
+  acertar.
+- **Rate limiting** en memoria (por IP) sobre los endpoints más sensibles a
+  abuso: `/api/subscribe` (10/hora), `/api/2fa/verify`, `/api/points/redeem`
+  y `/api/promotions/redeem` (20 cada 5 min). Es de un solo proceso —
+  suficiente para esta app, que ya corre con SQLite de un solo proceso; con
+  varias réplicas cada una lleva su propio conteo.
+- **Revocación de sesiones**: el cliente puede cerrar sesión en todos sus
+  dispositivos desde `/cuenta.html`, y el admin puede forzarlo desde
+  `/admin.html` (ej. celular perdido/robado, sospecha de cuenta comprometida).
+- Las cookies de sesión son `HttpOnly`, `SameSite=Lax`, y `Secure` cuando la
+  conexión llega por HTTPS.
+- El endpoint público `GET /api/promotions` nunca expone los códigos de
+  canje de una promoción (ver "Modelo de promociones" arriba).
+
+## Tests
+
+Sin dependencias externas — usa el test runner nativo de Node
+(`node:test` + `node:assert`). Cada archivo de test usa su propia base de
+datos temporal (vía la variable `DB_FILE`, que sobreescribe la ruta por
+defecto de `data/suscripciones.sqlite`) para no tocar datos de desarrollo.
+
+```bash
+npm test
+```
+
+Cubre: TOTP (generar/verificar/tolerancia de reloj), rate limiting,
+referidos (bono único), grupo familiar (crear/unirse/expulsar/salir),
+productos y promociones (crear/editar/borrado bloqueado si están en uso),
+canje de código (vigencia, límite de usos), compras y progreso de
+recompensa, y bloqueo/reseteo de intentos de 2FA.
+
+## CI
+
+`.github/workflows/ci.yml` corre en cada push/PR: verifica sintaxis de
+todos los `.js` del proyecto, corre `npm test`, y levanta el servidor real
+para un smoke test (`GET /`, `/cuenta.html`, `/admin.html` y
+`/api/subscribe/count`).
+
+## Docker
+
+```bash
+cp .env.example .env   # completar con tus valores
+docker compose up --build
+```
+
+Esto construye la imagen (`node:22-slim`), instala solo dependencias de
+producción, y monta un volumen (`desencajado_data`) para `data/` — la base
+SQLite sobrevive a recrear el contenedor. El puerto por defecto es `3000`
+(cambiar el mapeo en `docker-compose.yml` para usar otro puerto de host).
+
+**Backup de la base de datos**: `scripts/backup.js` usa `VACUUM INTO` de
+SQLite para sacar una copia consistente sin parar el servidor (evita el
+riesgo de copiar el archivo `.sqlite` a mano mientras hay una escritura en
+curso):
+
+```bash
+# En local
+npm run backup                       # guarda en data/backups/
+
+# Contra el contenedor (ejecuta el script dentro, ya tiene acceso al volumen)
+docker compose exec app node scripts/backup.js
+```
+
+No hay backups automáticos/programados — conviene agregar un cron (en el
+host, o un contenedor aparte) que corra ese comando periódicamente y suba
+el resultado a almacenamiento externo (S3, etc.) si esto va a producción real.

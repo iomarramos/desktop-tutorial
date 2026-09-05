@@ -196,6 +196,7 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
         Agregar a Google Wallet
       </a>
       <button class="btn ghost small" id="logout-btn">Cerrar sesión</button>
+      <button class="btn ghost small" id="logout-all-btn">Cerrar sesión en todos los dispositivos</button>
     </div>
   </div>
 
@@ -240,6 +241,9 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
     <div id="family-current" class="hidden">
       <p class="lead">Perteneces al grupo <b id="family-name"></b>. Código de invitación: <code id="family-invite"></code></p>
       <ul id="family-members" style="margin-top:.8rem;padding-left:1.2rem"></ul>
+      <div class="actions-row" style="margin-top:1rem">
+        <button class="btn ghost small" id="family-leave-btn">Salir del grupo</button>
+      </div>
     </div>
     <div id="family-forms">
       <div class="field">
@@ -388,6 +392,12 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   location.reload();
 });
 
+document.getElementById('logout-all-btn').addEventListener('click', async () => {
+  if (!confirm('¿Cerrar sesión en todos tus dispositivos? Vas a tener que volver a iniciar sesión en todos, incluido este.')) return;
+  await api('/api/logout-all', { method: 'POST' });
+  location.reload();
+});
+
 // ═══ Wallet principal ═══
 
 function renderWallet(user){
@@ -413,11 +423,26 @@ function renderWallet(user){
     document.getElementById('family-forms').classList.add('hidden');
     document.getElementById('family-name').textContent = user.familyGroup.name;
     document.getElementById('family-invite').textContent = user.familyGroup.invite_code;
+    const isOwner = user.familyGroup.owner_user_id === user.id;
     const list = document.getElementById('family-members');
     list.innerHTML = '';
     user.familyGroup.members.forEach(m => {
       const li = document.createElement('li');
       li.textContent = `${m.name} (${m.email})`;
+      if (isOwner && m.id !== user.id) {
+        const btn = document.createElement('button');
+        btn.className = 'btn ghost small';
+        btn.style.marginLeft = '.6rem';
+        btn.style.padding = '.2rem .6rem';
+        btn.style.fontSize = '.72rem';
+        btn.textContent = 'Expulsar';
+        btn.onclick = async () => {
+          const { ok, data } = await api('/api/family/remove-member', { method: 'POST', body: JSON.stringify({ userId: m.id }) });
+          if (!ok) { alert(data.error || 'No se pudo expulsar.'); return; }
+          await refreshUser();
+        };
+        li.appendChild(btn);
+      }
       list.appendChild(li);
     });
   }
@@ -626,6 +651,13 @@ document.getElementById('redeem-confirm-btn').addEventListener('click', async ()
 });
 
 // ═══ Grupo familiar ═══
+
+document.getElementById('family-leave-btn').addEventListener('click', async () => {
+  if (!confirm('¿Salir del grupo familiar? Si sos el dueño, el grupo se disuelve para todos los miembros.')) return;
+  const { ok, data } = await api('/api/family/leave', { method: 'POST' });
+  if (!ok) { alert(data.error || 'No se pudo salir del grupo.'); return; }
+  location.reload();
+});
 
 document.getElementById('family-create-btn').addEventListener('click', async () => {
   const name = document.getElementById('family-name-input').value.trim();

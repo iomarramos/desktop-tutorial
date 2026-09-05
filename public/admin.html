@@ -159,7 +159,7 @@ textarea{resize:vertical;min-height:70px}
         </div>
       </div>
       <table>
-        <thead><tr><th>Nombre</th><th>Email</th><th>Estrellas</th><th>Compras</th><th>Total gastado</th><th>2FA</th><th>Registrado</th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Email</th><th>Estrellas</th><th>Compras</th><th>Total gastado</th><th>2FA</th><th>Registrado</th><th></th></tr></thead>
         <tbody id="usuarios-body"></tbody>
       </table>
       <p class="empty hidden" id="usuarios-empty">Sin usuarios todavía.</p>
@@ -454,7 +454,19 @@ async function loadUsuarios(page = pageState.usuarios){
   data.items.forEach(u => {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${u.name}</td><td>${u.email}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
-      <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${u.created_at}</td>`;
+      <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${u.created_at}</td><td></td>`;
+    const actionTd = tr.lastElementChild;
+    const btn = document.createElement('button');
+    btn.className = 'btn ghost small';
+    btn.textContent = 'Forzar cierre de sesión';
+    btn.title = 'Cierra la sesión de este cliente en todos sus dispositivos';
+    btn.onclick = async () => {
+      if (!confirm(`¿Cerrar sesión de ${u.email} en todos sus dispositivos?`)) return;
+      await adminPost('/api/admin/users/force-logout', { email: u.email });
+      btn.textContent = '✅ Sesión cerrada';
+      btn.disabled = true;
+    };
+    actionTd.appendChild(btn);
     body.appendChild(tr);
   });
   renderPager('usuarios-pager', data.page, data.total, data.limit, loadUsuarios);
@@ -586,13 +598,46 @@ async function loadPromos(page = pageState.promos){
       </div>`;
     row.appendChild(main);
 
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.flexDirection = 'column';
+    actions.style.gap = '.4rem';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn ghost small';
+    editBtn.textContent = 'Editar';
+    editBtn.onclick = async () => {
+      const title = prompt('Título', p.title);
+      if (title === null) return;
+      const body = prompt('Mensaje', p.body);
+      if (body === null) return;
+      const photoUrl = prompt('Foto (URL, vacío = sin foto)', p.photo_url || '');
+      if (photoUrl === null) return;
+      const { ok, data } = await adminPost('/api/admin/promotions/update', { id: p.id, title, body, photoUrl });
+      if (!ok) { alert(data.error || 'No se pudo editar.'); return; }
+      loadPromos(page);
+    };
+    actions.appendChild(editBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn ghost small';
+    deleteBtn.textContent = 'Eliminar';
+    deleteBtn.onclick = async () => {
+      if (!confirm(`¿Eliminar definitivamente "${p.title}"? Si ya tiene canjes, no se podrá y hay que desactivarla en su lugar.`)) return;
+      const { ok, data } = await adminPost('/api/admin/promotions/delete', { id: p.id });
+      if (!ok) { alert(data.error); return; }
+      loadPromos(page);
+    };
+    actions.appendChild(deleteBtn);
+
     if (p.active) {
       const btn = document.createElement('button');
       btn.className = 'btn ghost small';
       btn.textContent = 'Desactivar';
       btn.onclick = async () => { await adminPost('/api/admin/promotions/deactivate', { id: p.id }); loadPromos(page); };
-      row.appendChild(btn);
+      actions.appendChild(btn);
     }
+    row.appendChild(actions);
     list.appendChild(row);
   });
 
@@ -647,13 +692,45 @@ async function loadProductos(page = pageState.productos || 1){
         <b>${prod.name}</b> ${prod.active ? '' : '<span class="pill">Inactivo</span>'}
         ${prod.price != null ? `<p style="font-size:.8rem;opacity:.7">S/ ${Number(prod.price).toFixed(2)}</p>` : ''}
       </div>`;
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '.4rem';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn ghost small';
+    editBtn.textContent = 'Editar';
+    editBtn.onclick = async () => {
+      const name = prompt('Nombre', prod.name);
+      if (name === null) return;
+      const photoUrl = prompt('Foto (URL, vacío = sin foto)', prod.photo_url || '');
+      if (photoUrl === null) return;
+      const price = prompt('Precio (S/, vacío = sin precio)', prod.price != null ? prod.price : '');
+      if (price === null) return;
+      const { ok, data } = await adminPost('/api/admin/products/update', { id: prod.id, name, photoUrl, price: price || null });
+      if (!ok) { alert(data.error || 'No se pudo editar.'); return; }
+      loadProductos(page);
+    };
+    actions.appendChild(editBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn ghost small';
+    deleteBtn.textContent = 'Eliminar';
+    deleteBtn.onclick = async () => {
+      if (!confirm(`¿Eliminar definitivamente "${prod.name}"? Si está en alguna promoción, no se podrá y hay que desactivarlo en su lugar.`)) return;
+      const { ok, data } = await adminPost('/api/admin/products/delete', { id: prod.id });
+      if (!ok) { alert(data.error); return; }
+      loadProductos(page);
+    };
+    actions.appendChild(deleteBtn);
+
     if (prod.active) {
       const btn = document.createElement('button');
       btn.className = 'btn ghost small';
       btn.textContent = 'Desactivar';
       btn.onclick = async () => { await adminPost('/api/admin/products/deactivate', { id: prod.id }); loadProductos(page); };
-      row.appendChild(btn);
+      actions.appendChild(btn);
     }
+    row.appendChild(actions);
     list.appendChild(row);
   });
   renderPager('productos-pager', data.page, data.total, data.limit, loadProductos);

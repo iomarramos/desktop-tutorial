@@ -6,12 +6,14 @@ const {
   addSubscriber, dniExists, getCount, listSubscribers,
   upsertGoogleUser, getUserById, getUserByEmail, getUserByReferralCode, setReferredBy,
   setTotpSecret, enableTotp,
-  createSession, getSession, setSessionStage, deleteSession,
+  createSession, getSession, setSessionStage, deleteSession, deleteAllSessionsForUser,
+  isTotpLocked, registerTotpFailure, resetTotpAttempts, TOTP_LOCKOUT_MINUTES,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
-  createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser,
-  createProduct, listActiveProducts, adminListProducts, deactivateProduct,
+  createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser, leaveFamilyGroup, removeFamilyMember,
+  createProduct, listActiveProducts, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
   createPromotion, addPromotionCode, redeemPromotionCode,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
+  updatePromotion, deletePromotion,
   addPushSubscription, removePushSubscription, listAllPushSubscriptions,
   adminListUsers, adminListReferrals, adminListFamilyGroups, adminListPurchases, adminTrafficStats,
   adminAllUsers, adminAllPurchases, adminAllReferrals,
@@ -20,6 +22,7 @@ const google = require('./auth/google');
 const totp = require('./auth/totp');
 const push = require('./auth/push');
 const googleWallet = require('./auth/googleWallet');
+const { checkRateLimit } = require('./auth/rateLimit');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -103,6 +106,29 @@ function validateSubscription({ nombre, telefono, dni, unasam }) {
     errors,
     value: { nombre: cleanNombre, telefono: cleanTelefono, dni: cleanDni, unasam: cleanUnasam },
   };
+}
+
+// El primer IP de X-Forwarded-For (si hay un proxy/reverse-proxy delante,
+// como en el despliegue con Docker detrás de nginx/Caddy); si no, la
+// conexión directa. No se valida el proxy en sí (más allá del alcance de
+// esta app), así que en un despliegue público real ese header solo debe
+// confiarse si viene de una red/proxy propios.
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return String(forwarded).split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function rateLimited(req, res, routeKey, { max, windowMs }) {
+  const result = checkRateLimit(`${routeKey}:${getClientIp(req)}`, { max, windowMs });
+  if (!result.allowed) {
+    sendJson(res, 429, {
+      ok: false,
+      error: `Demasiados intentos. Intenta de nuevo en ${result.retryAfterSeconds}s.`,
+    }, { 'Retry-After': String(result.retryAfterSeconds) });
+    return true;
+  }
+  return false;
 }
 
 function isAuthorizedAdmin(req) {
@@ -270,6 +296,17 @@ function handleLogout(req, res) {
   res.end(JSON.stringify({ ok: true }));
 }
 
+// Cierra la sesión actual y todas las demás abiertas de este usuario (otros
+// dispositivos/navegadores) — no hay forma de listarlas/revocarlas una por
+// una, es todo o nada.
+function handleLogoutAll(req, res) {
+  const found = getSessionFromRequest(req);
+  if (!found) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+  deleteAllSessionsForUser(found.session.user_id);
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': clearCookieString(req, SESSION_COOKIE) });
+  res.end(JSON.stringify({ ok: true }));
+}
+
 async function handleTotpSetup(req, res) {
   const found = getSessionFromRequest(req);
   if (!found || found.session.stage !== 'needs_2fa_setup') {
@@ -282,9 +319,18 @@ async function handleTotpSetup(req, res) {
 }
 
 async function handleTotpVerify(req, res) {
+  if (rateLimited(req, res, '2fa-verify', { max: 20, windowMs: 5 * 60_000 })) return;
+
   const found = getSessionFromRequest(req);
   if (!found || (found.session.stage !== 'needs_2fa_setup' && found.session.stage !== 'pending_2fa')) {
     return sendJson(res, 400, { ok: false, error: 'No hay una verificación 2FA pendiente.' });
+  }
+
+  if (isTotpLocked(found.session)) {
+    return sendJson(res, 429, {
+      ok: false,
+      error: `Demasiados intentos incorrectos. Espera unos minutos (máx. ${TOTP_LOCKOUT_MINUTES} min) y vuelve a intentar.`,
+    });
   }
 
   let body;
@@ -300,9 +346,11 @@ async function handleTotpVerify(req, res) {
   }
 
   if (!totp.verifyTOTP(user.totp_secret, body.code)) {
+    registerTotpFailure(found.token);
     return sendJson(res, 401, { ok: false, error: 'Código incorrecto. Verifica la hora de tu dispositivo e intenta de nuevo.' });
   }
 
+  resetTotpAttempts(found.token);
   if (found.session.stage === 'needs_2fa_setup') enableTotp(user.id);
   setSessionStage(found.token, 'active');
   sendJson(res, 200, { ok: true, user: serializeUser(getUserById(user.id)) });
@@ -318,6 +366,7 @@ function handlePurchasesList(req, res, query) {
 }
 
 async function handlePointsRedeem(req, res) {
+  if (rateLimited(req, res, 'points-redeem', { max: 20, windowMs: 5 * 60_000 })) return;
   const user = requireActiveUser(req);
   if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
 
@@ -377,6 +426,44 @@ async function handleFamilyJoin(req, res) {
   }
 }
 
+function handleFamilyLeave(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  try {
+    const result = leaveFamilyGroup(user.id);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'No perteneces a ningún grupo familiar.' });
+  }
+}
+
+async function handleFamilyRemoveMember(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const FAMILY_REMOVE_ERRORS = {
+    NOT_IN_GROUP: 'No perteneces a ningún grupo familiar.',
+    NOT_OWNER: 'Solo el dueño del grupo puede expulsar miembros.',
+    CANNOT_REMOVE_SELF: 'Usa "Salir del grupo" para vos mismo.',
+    NOT_A_MEMBER: 'Ese usuario no pertenece a tu grupo.',
+  };
+
+  try {
+    removeFamilyMember(user.id, body.userId);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 400, { ok: false, error: FAMILY_REMOVE_ERRORS[err.message] || 'No se pudo expulsar al miembro.' });
+  }
+}
+
 // ───────────────────────── promociones (cliente) ─────────────────────────
 
 // Público: las promociones activas son contenido de marketing, no datos
@@ -395,6 +482,7 @@ const PROMO_REDEEM_ERRORS = {
 };
 
 async function handlePromotionRedeem(req, res) {
+  if (rateLimited(req, res, 'promo-redeem', { max: 20, windowMs: 5 * 60_000 })) return;
   const user = requireActiveUser(req);
   if (!user) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
 
@@ -479,6 +567,7 @@ function handleGoogleWalletPass(req, res) {
 // ───────────────────────── suscripción pre-apertura (existente) ─────────────────────────
 
 async function handleSubscribe(req, res) {
+  if (rateLimited(req, res, 'subscribe', { max: 10, windowMs: 60 * 60_000 })) return;
   let raw;
   try {
     raw = await readBody(req);
@@ -554,6 +643,28 @@ async function handleAdminPurchaseCreate(req, res) {
 function handleAdminUsers(req, res, query) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
   sendJson(res, 200, { ok: true, ...adminListUsers(paginationParams(query)) });
+}
+
+// Fuerza el cierre de sesión de un cliente en todos sus dispositivos (ej.
+// celular perdido/robado, sospecha de cuenta comprometida).
+async function handleAdminForceLogout(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const email = String(body.email || '').trim().toLowerCase();
+  if (!email) return sendJson(res, 400, { ok: false, error: 'Se requiere el email del cliente.' });
+
+  const target = getUserByEmail(email);
+  if (!target) return sendJson(res, 404, { ok: false, error: 'Cliente no encontrado.' });
+
+  deleteAllSessionsForUser(target.id);
+  sendJson(res, 200, { ok: true });
 }
 
 function handleAdminReferrals(req, res, query) {
@@ -640,6 +751,57 @@ async function handleAdminPromotionDeactivate(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+async function handleAdminPromotionUpdate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+
+  try {
+    const productIds = Array.isArray(body.productIds) ? body.productIds.map(Number).filter(Boolean) : undefined;
+    const promotion = updatePromotion(body.id, {
+      title: body.title,
+      body: body.body,
+      photoUrl: body.photoUrl,
+      startsAt: body.startsAt,
+      endsAt: body.endsAt,
+      productIds,
+    });
+    sendJson(res, 200, { ok: true, promotion });
+  } catch {
+    sendJson(res, 404, { ok: false, error: 'Promoción no encontrada.' });
+  }
+}
+
+async function handleAdminPromotionDelete(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+
+  try {
+    deletePromotion(body.id);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    const msg = err.message === 'PROMOTION_HAS_REDEMPTIONS'
+      ? 'Esta promoción ya tiene canjes registrados: no se puede borrar, solo desactivar.'
+      : 'Promoción no encontrada.';
+    sendJson(res, 400, { ok: false, error: msg });
+  }
+}
+
 async function handleAdminPromotionAddCode(req, res) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
 
@@ -702,6 +864,49 @@ async function handleAdminProductDeactivate(req, res) {
   if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del producto.' });
   deactivateProduct(body.id);
   sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminProductUpdate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del producto.' });
+
+  try {
+    const product = updateProduct(body.id, { name: body.name, photoUrl: body.photoUrl, price: body.price });
+    sendJson(res, 200, { ok: true, product });
+  } catch {
+    sendJson(res, 404, { ok: false, error: 'Producto no encontrado.' });
+  }
+}
+
+async function handleAdminProductDelete(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del producto.' });
+
+  try {
+    deleteProduct(body.id);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    const msg = err.message === 'PRODUCT_IN_USE'
+      ? 'Este producto está asociado a una o más promociones: no se puede borrar, solo desactivar.'
+      : 'Producto no encontrado.';
+    sendJson(res, 400, { ok: false, error: msg });
+  }
 }
 
 // ───────────────────────── administrador: exportar CSV ─────────────────────────
@@ -806,6 +1011,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/auth/google') return handleGoogleStart(req, res, query);
     if (req.method === 'GET' && url === '/auth/google/callback') return handleGoogleCallback(req, res, query);
     if (req.method === 'POST' && url === '/api/logout') return handleLogout(req, res);
+    if (req.method === 'POST' && url === '/api/logout-all') return handleLogoutAll(req, res);
     if (req.method === 'GET' && url === '/api/me') return handleMe(req, res);
     if (req.method === 'POST' && url === '/api/2fa/setup') return handleTotpSetup(req, res);
     if (req.method === 'POST' && url === '/api/2fa/verify') return handleTotpVerify(req, res);
@@ -815,6 +1021,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/points/redeem') return handlePointsRedeem(req, res);
     if (req.method === 'POST' && url === '/api/family/create') return handleFamilyCreate(req, res);
     if (req.method === 'POST' && url === '/api/family/join') return handleFamilyJoin(req, res);
+    if (req.method === 'POST' && url === '/api/family/leave') return handleFamilyLeave(req, res);
+    if (req.method === 'POST' && url === '/api/family/remove-member') return handleFamilyRemoveMember(req, res);
     if (req.method === 'GET' && url === '/api/promotions') return handlePromotionsList(req, res);
     if (req.method === 'POST' && url === '/api/promotions/redeem') return handlePromotionRedeem(req, res);
     if (req.method === 'GET' && url === '/api/wallet/google-pass') return handleGoogleWalletPass(req, res);
@@ -828,17 +1036,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/admin/purchases') return handleAdminPurchaseCreate(req, res);
     if (req.method === 'GET' && url === '/api/admin/purchases') return handleAdminPurchases(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/users') return handleAdminUsers(req, res, query);
+    if (req.method === 'POST' && url === '/api/admin/users/force-logout') return handleAdminForceLogout(req, res);
     if (req.method === 'GET' && url === '/api/admin/referrals') return handleAdminReferrals(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/family-groups') return handleAdminFamilyGroups(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/stats/traffic') return handleAdminTraffic(req, res);
     if (req.method === 'GET' && url === '/api/admin/promotions') return handleAdminPromotionsList(req, res, query);
     if (req.method === 'POST' && url === '/api/admin/promotions') return handleAdminPromotionCreate(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/deactivate') return handleAdminPromotionDeactivate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/promotions/update') return handleAdminPromotionUpdate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/promotions/delete') return handleAdminPromotionDelete(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/codes') return handleAdminPromotionAddCode(req, res);
     if (req.method === 'GET' && url === '/api/admin/products') return handleAdminProductsList(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/products/active') return handleAdminProductsActive(req, res);
     if (req.method === 'POST' && url === '/api/admin/products') return handleAdminProductCreate(req, res);
     if (req.method === 'POST' && url === '/api/admin/products/deactivate') return handleAdminProductDeactivate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/products/update') return handleAdminProductUpdate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/products/delete') return handleAdminProductDelete(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/users.csv') return handleAdminExportUsers(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/purchases.csv') return handleAdminExportPurchases(req, res);
     if (req.method === 'GET' && url === '/api/admin/export/referrals.csv') return handleAdminExportReferrals(req, res);

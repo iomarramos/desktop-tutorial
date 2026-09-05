@@ -4,9 +4,11 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = path.join(__dirname, 'data');
-const DB_PATH = path.join(DATA_DIR, 'suscripciones.sqlite');
+// DB_FILE permite apuntar a otra base (ej. una temporal en los tests) sin
+// tocar la de desarrollo; por defecto sigue siendo data/suscripciones.sqlite.
+const DB_PATH = process.env.DB_FILE || path.join(DATA_DIR, 'suscripciones.sqlite');
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 
@@ -155,6 +157,8 @@ ensureColumn('promotions', 'photo_url', 'TEXT');
 ensureColumn('promotions', 'starts_at', 'TEXT');
 ensureColumn('promotions', 'ends_at', 'TEXT');
 ensureColumn('promotions', 'publication_code', 'TEXT');
+ensureColumn('sessions', 'totp_attempts', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('sessions', 'totp_locked_until', 'TEXT');
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_user ON points_ledger(user_id)');
@@ -166,6 +170,10 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_promo_redemptions_code ON promotion_rede
 
 const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process.env.SOLES_PER_PUNTO) : 5;
 const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
+const REFERRAL_BONUS_POINTS = Number(process.env.REFERRAL_BONUS_POINTS) >= 0 ? Number(process.env.REFERRAL_BONUS_POINTS) : 20;
+const REFERRAL_WELCOME_POINTS = Number(process.env.REFERRAL_WELCOME_POINTS) >= 0 ? Number(process.env.REFERRAL_WELCOME_POINTS) : 10;
+const TOTP_MAX_ATTEMPTS = Number(process.env.TOTP_MAX_ATTEMPTS) > 0 ? Number(process.env.TOTP_MAX_ATTEMPTS) : 5;
+const TOTP_LOCKOUT_MINUTES = Number(process.env.TOTP_LOCKOUT_MINUTES) > 0 ? Number(process.env.TOTP_LOCKOUT_MINUTES) : 5;
 
 // ───────────────────────── suscripciones (pre-apertura) ─────────────────────────
 
@@ -220,6 +228,7 @@ const updateUserProfileStmt = db.prepare(
   'UPDATE users SET name = ?, avatar_url = ? WHERE id = ?'
 );
 const setReferredByStmt = db.prepare('UPDATE users SET referred_by = ? WHERE id = ? AND referred_by IS NULL');
+const deleteAllSessionsForUserStmt = db.prepare('DELETE FROM sessions WHERE user_id = ?');
 const setTotpSecretStmt = db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?');
 const enableTotpStmt = db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = ?');
 const setFamilyGroupStmt = db.prepare('UPDATE users SET family_group_id = ? WHERE id = ?');
@@ -251,9 +260,23 @@ function getUserByReferralCode(code) {
   return getUserByReferralCodeStmt.get(code);
 }
 
+// Solo aplica (y solo paga el bono) la primera vez: setReferredByStmt tiene
+// `AND referred_by IS NULL`, así que un segundo intento no vuelve a pagar.
 function setReferredBy(userId, referrerId) {
-  if (userId === referrerId) return;
-  setReferredByStmt.run(referrerId, userId);
+  if (userId === referrerId) return false;
+  const info = setReferredByStmt.run(referrerId, userId);
+  if (info.changes === 0) return false;
+  if (REFERRAL_BONUS_POINTS > 0) {
+    insertLedgerStmt.run(referrerId, REFERRAL_BONUS_POINTS, `Bono por referir a un nuevo cliente`);
+  }
+  if (REFERRAL_WELCOME_POINTS > 0) {
+    insertLedgerStmt.run(userId, REFERRAL_WELCOME_POINTS, 'Bono de bienvenida por registrarte con un código de referido');
+  }
+  return true;
+}
+
+function deleteAllSessionsForUser(userId) {
+  deleteAllSessionsForUserStmt.run(userId);
 }
 
 function setTotpSecret(userId, secret) {
@@ -301,6 +324,34 @@ function setSessionStage(token, stage) {
 
 function deleteSession(token) {
   deleteSessionStmt.run(token);
+}
+
+// ───────────────────────── bloqueo de intentos 2FA ─────────────────────────
+
+const incrementTotpAttemptsStmt = db.prepare(
+  `UPDATE sessions SET totp_attempts = totp_attempts + 1,
+     totp_locked_until = CASE WHEN totp_attempts + 1 >= ? THEN datetime('now', ?) ELSE totp_locked_until END
+   WHERE token = ?`
+);
+const resetTotpAttemptsStmt = db.prepare('UPDATE sessions SET totp_attempts = 0, totp_locked_until = NULL WHERE token = ?');
+
+// SQLite datetime('now', ...) devuelve "YYYY-MM-DD HH:MM:SS" en UTC pero sin
+// sufijo de zona horaria; hay que normalizarlo a ISO 8601 antes de comparar
+// con `new Date()`, si no V8 lo interpreta como hora local.
+function sqliteUtcToDate(value) {
+  return new Date(`${value.replace(' ', 'T')}Z`);
+}
+
+function isTotpLocked(session) {
+  return Boolean(session.totp_locked_until && sqliteUtcToDate(session.totp_locked_until) > new Date());
+}
+
+function registerTotpFailure(token) {
+  incrementTotpAttemptsStmt.run(TOTP_MAX_ATTEMPTS, `+${TOTP_LOCKOUT_MINUTES} minutes`, token);
+}
+
+function resetTotpAttempts(token) {
+  resetTotpAttemptsStmt.run(token);
 }
 
 // ───────────────────────── puntos / compras (consumo) ─────────────────────────
@@ -397,6 +448,37 @@ function getFamilyGroupForUser(userId) {
   return { ...group, members: listFamilyMembersStmt.all(group.id) };
 }
 
+const clearFamilyGroupForAllMembersStmt = db.prepare('UPDATE users SET family_group_id = NULL WHERE family_group_id = ?');
+const deleteFamilyGroupStmt = db.prepare('DELETE FROM family_groups WHERE id = ?');
+
+// Si sale el dueño, el grupo se disuelve para todos (no hay a quién
+// transferir la propiedad); si sale un miembro normal, solo él se va.
+function leaveFamilyGroup(userId) {
+  const user = getUserById(userId);
+  if (!user || !user.family_group_id) throw new Error('NOT_IN_GROUP');
+  const group = getFamilyGroupByIdStmt.get(user.family_group_id);
+
+  if (group.owner_user_id === userId) {
+    clearFamilyGroupForAllMembersStmt.run(group.id);
+    deleteFamilyGroupStmt.run(group.id);
+    return { disbanded: true };
+  }
+  setFamilyGroupStmt.run(null, userId);
+  return { disbanded: false };
+}
+
+function removeFamilyMember(ownerId, memberUserId) {
+  const owner = getUserById(ownerId);
+  if (!owner || !owner.family_group_id) throw new Error('NOT_IN_GROUP');
+  const group = getFamilyGroupByIdStmt.get(owner.family_group_id);
+  if (!group || group.owner_user_id !== ownerId) throw new Error('NOT_OWNER');
+  if (Number(memberUserId) === Number(ownerId)) throw new Error('CANNOT_REMOVE_SELF');
+
+  const member = getUserById(memberUserId);
+  if (!member || member.family_group_id !== group.id) throw new Error('NOT_A_MEMBER');
+  setFamilyGroupStmt.run(null, memberUserId);
+}
+
 // ───────────────────────── catálogo de productos ─────────────────────────
 
 const insertProductStmt = db.prepare(
@@ -433,6 +515,30 @@ function adminListProducts({ limit = 20, page = 1 } = {}) {
 
 function deactivateProduct(id) {
   deactivateProductStmt.run(id);
+}
+
+const updateProductStmt = db.prepare('UPDATE products SET name = ?, photo_url = ?, price = ? WHERE id = ?');
+const countPromotionProductsForProductStmt = db.prepare('SELECT COUNT(*) AS total FROM promotion_products WHERE product_id = ?');
+const deleteProductStmt = db.prepare('DELETE FROM products WHERE id = ?');
+
+function updateProduct(id, { name, photoUrl, price }) {
+  const existing = getProductByIdStmt.get(id);
+  if (!existing) throw new Error('PRODUCT_NOT_FOUND');
+  updateProductStmt.run(
+    name != null && name !== '' ? name : existing.name,
+    photoUrl !== undefined ? (photoUrl || null) : existing.photo_url,
+    price !== undefined ? (price != null && price !== '' ? Number(price) : null) : existing.price,
+    id
+  );
+  return getProductByIdStmt.get(id);
+}
+
+// Borrado real solo si el producto no está asociado a ninguna promoción; si
+// lo está, hay que desactivarlo en vez de borrarlo (no rompe el historial).
+function deleteProduct(id) {
+  if (countPromotionProductsForProductStmt.get(id).total > 0) throw new Error('PRODUCT_IN_USE');
+  const info = deleteProductStmt.run(id);
+  if (info.changes === 0) throw new Error('PRODUCT_NOT_FOUND');
 }
 
 // ───────────────────────── promociones ─────────────────────────
@@ -558,6 +664,46 @@ function deactivatePromotion(id) {
 
 function markPromotionPushed(id, count) {
   markPromotionPushedStmt.run(count, id);
+}
+
+const updatePromotionStmt = db.prepare(
+  'UPDATE promotions SET title = ?, body = ?, photo_url = ?, starts_at = ?, ends_at = ? WHERE id = ?'
+);
+const deletePromotionProductsStmt = db.prepare('DELETE FROM promotion_products WHERE promotion_id = ?');
+const countPromotionRedemptionsStmt = db.prepare(
+  `SELECT COUNT(*) AS total FROM promotion_redemptions r
+   JOIN promotion_codes c ON c.id = r.promotion_code_id
+   WHERE c.promotion_id = ?`
+);
+const deletePromotionCodesStmt = db.prepare('DELETE FROM promotion_codes WHERE promotion_id = ?');
+const deletePromotionStmt = db.prepare('DELETE FROM promotions WHERE id = ?');
+
+function updatePromotion(id, { title, body, photoUrl, startsAt, endsAt, productIds }) {
+  const existing = getPromotionByIdStmt.get(id);
+  if (!existing) throw new Error('PROMOTION_NOT_FOUND');
+  updatePromotionStmt.run(
+    title != null && title !== '' ? title : existing.title,
+    body != null && body !== '' ? body : existing.body,
+    photoUrl !== undefined ? (photoUrl || null) : existing.photo_url,
+    startsAt !== undefined ? (startsAt || null) : existing.starts_at,
+    endsAt !== undefined ? (endsAt || null) : existing.ends_at,
+    id
+  );
+  if (productIds !== undefined) {
+    deletePromotionProductsStmt.run(id);
+    for (const productId of productIds) insertPromotionProductStmt.run(id, productId);
+  }
+  return hydratePromotion(getPromotionByIdStmt.get(id));
+}
+
+// Borrado real solo si nadie canjeó ningún código de esta promoción (si no,
+// se pierde el historial de canjes); si ya se usó, hay que desactivarla.
+function deletePromotion(id) {
+  if (countPromotionRedemptionsStmt.get(id).total > 0) throw new Error('PROMOTION_HAS_REDEMPTIONS');
+  deletePromotionProductsStmt.run(id);
+  deletePromotionCodesStmt.run(id);
+  const info = deletePromotionStmt.run(id);
+  if (info.changes === 0) throw new Error('PROMOTION_NOT_FOUND');
 }
 
 // ───────────────────────── notificaciones push ─────────────────────────
@@ -804,6 +950,12 @@ module.exports = {
   getSession,
   setSessionStage,
   deleteSession,
+  deleteAllSessionsForUser,
+  isTotpLocked,
+  registerTotpFailure,
+  resetTotpAttempts,
+  TOTP_MAX_ATTEMPTS,
+  TOTP_LOCKOUT_MINUTES,
   // puntos / compras
   addPurchase,
   getPointsBalance,
@@ -812,16 +964,22 @@ module.exports = {
   getRewardProgress,
   SOLES_PER_PUNTO,
   REWARD_THRESHOLD,
+  REFERRAL_BONUS_POINTS,
+  REFERRAL_WELCOME_POINTS,
   // familia
   createFamilyGroup,
   joinFamilyGroup,
   getFamilyGroupForUser,
+  leaveFamilyGroup,
+  removeFamilyMember,
   // productos
   createProduct,
   getProductById,
   listActiveProducts,
   adminListProducts,
   deactivateProduct,
+  updateProduct,
+  deleteProduct,
   // promociones
   createPromotion,
   addPromotionCode,
@@ -830,6 +988,8 @@ module.exports = {
   adminListPromotions,
   deactivatePromotion,
   markPromotionPushed,
+  updatePromotion,
+  deletePromotion,
   // push
   addPushSubscription,
   removePushSubscription,
