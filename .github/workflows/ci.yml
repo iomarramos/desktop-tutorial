@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
@@ -14,7 +14,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.5'
+          # No fijar '22.5': las primeras patch de la serie 22.5.x todavía
+          # requieren el flag --experimental-sqlite para poder hacer
+          # `require('node:sqlite')` (falla con ERR_UNKNOWN_BUILTIN_MODULE
+          # sin él); versiones más nuevas de Node 22 no lo necesitan. '22'
+          # trae la última patch de la serie, que sí funciona sin flag.
+          node-version: '22'
           cache: 'npm'
 
       - name: Instalar dependencias

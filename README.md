@@ -25,7 +25,11 @@ GitHub Actions, y listo para correr en Docker.
 
 ## Requisitos
 
-- Node.js 22.5 o superior (usa el módulo experimental `node:sqlite`).
+- Node.js 22.5 o superior (usa el módulo experimental `node:sqlite`). Las
+  primeras patch de la serie 22.5.x todavía piden el flag
+  `--experimental-sqlite` para poder usarlo (falla con
+  `ERR_UNKNOWN_BUILTIN_MODULE` sin él); versiones más nuevas de Node 22 no
+  lo necesitan — usá la última patch disponible de Node 22 si podés.
 - El TOTP y el JWT de Google Wallet se implementan con `node:crypto` puro
   (sin dependencias). El QR de 2FA se dibuja en el navegador con
   [qrcodejs](https://github.com/davidshimjs/qrcodejs) vía CDN, así el
