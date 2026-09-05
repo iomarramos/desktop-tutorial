@@ -716,6 +716,33 @@ async function loadPromos(page = pageState.promos){
     };
     actions.appendChild(redeemersBtn);
 
+    const nonRedeemersBtn = document.createElement('button');
+    nonRedeemersBtn.className = 'btn ghost small';
+    nonRedeemersBtn.textContent = 'Ver quiénes NO canjearon';
+    nonRedeemersBtn.onclick = async () => {
+      const q = prompt('Buscar por nombre o correo (opcional, vacío = todos):', '') || '';
+      let page = 1;
+      while (true) {
+        const qs = new URLSearchParams({ id: p.id, page, limit: 20 });
+        if (q) qs.set('q', q);
+        const data = await adminFetch(`/api/admin/promotions/non-redeemers?${qs}`);
+        if (!data.items || data.items.length === 0) {
+          alert(page === 1 ? 'Todos los clientes (o los que coinciden con la búsqueda) ya canjearon esta promoción.' : 'No hay más resultados.');
+          break;
+        }
+        const totalPages = Math.max(Math.ceil(data.total / data.limit), 1);
+        const lines = data.items.map(u => `• ${u.name} (${u.email})`);
+        const seeMore = page < totalPages
+          && confirm(`NO canjearon "${p.title}" — página ${page}/${totalPages} de ${data.total} cliente(s):\n\n${lines.join('\n')}\n\n¿Ver siguiente página?`);
+        if (!seeMore) {
+          if (page >= totalPages) alert(`NO canjearon "${p.title}" (${data.total} en total):\n\n${lines.join('\n')}`);
+          break;
+        }
+        page += 1;
+      }
+    };
+    actions.appendChild(nonRedeemersBtn);
+
     const editBtn = document.createElement('button');
     editBtn.className = 'btn ghost small';
     editBtn.textContent = 'Editar';
@@ -787,7 +814,7 @@ async function submitPromotion(confirmDuplicate){
 
   const pushMsg = data.scheduled
     ? `📅 Programada (${data.promotion.publication_code}) — se avisará por push y Wallet el ${data.promotion.starts_at}.`
-    : `✅ Publicada (${data.promotion.publication_code}). Push enviado a ${data.pushSent} dispositivo(s) y ${data.walletPushSent} wallet(s).`;
+    : `✅ Publicada (${data.promotion.publication_code}). Push enviado a ${data.pushSent} dispositivo(s) y encolado para ${data.walletPushQueued} wallet(s).`;
   setMsg('promo-msg', 'ok', pushMsg);
   document.getElementById('promo-title').value = '';
   document.getElementById('promo-body').value = '';

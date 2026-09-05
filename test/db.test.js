@@ -452,6 +452,29 @@ test('adminPromotionsSummary + getPromotionRedeemers: cuenta canjeadores y no-ca
   assert.equal(summary.totalNeverRedeemed, summary.totalUsers - summary.totalRedeemers);
 });
 
+test('getPromotionNonRedeemers: excluye a quien canjeó, pagina y busca por nombre/correo', () => {
+  const redeemer = makeUser('NoCanjeo Canjeador');
+  const pending1 = makeUser('NoCanjeo Pendiente Uno');
+  const pending2 = makeUser('NoCanjeo Pendiente Dos');
+  const promo = db.createPromotion({ title: 'Promo no canjeada', body: 'x' });
+  db.addPromotionCode(promo.id, { code: 'NOCANJE1', label: null, maxUses: null });
+  db.redeemPromotionCode('NOCANJE1', redeemer.id);
+
+  const all = db.getPromotionNonRedeemers(promo.id, { limit: 50 });
+  const ids = all.items.map((u) => u.user_id);
+  assert.ok(ids.includes(pending1.id));
+  assert.ok(ids.includes(pending2.id));
+  assert.ok(!ids.includes(redeemer.id));
+
+  const paged = db.getPromotionNonRedeemers(promo.id, { limit: 1, page: 1 });
+  assert.equal(paged.items.length, 1);
+  assert.ok(paged.total >= 2);
+
+  const searched = db.getPromotionNonRedeemers(promo.id, { limit: 50, q: 'Pendiente Uno' });
+  assert.equal(searched.items.length, 1);
+  assert.equal(searched.items[0].user_id, pending1.id);
+});
+
 test('adminListPromotions: redeemedCount cuenta clientes distintos, no canjes totales', () => {
   const a = makeUser('Distinct A');
   const b = makeUser('Distinct B');

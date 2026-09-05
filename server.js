@@ -15,7 +15,7 @@ const {
   createProfileField, getProfileFieldByKey, adminListProfileFields,
   updateProfileField, deleteProfileField, getUserProfileValues, getMissingRequiredFields, setUserProfileValues,
   createPromotion, addPromotionCode, redeemPromotionCode, findActivePromotionByTitle,
-  getPromotionRedeemers, adminPromotionsSummary, adminTopCustomersByPurchases, adminRecurringPromoCustomers,
+  getPromotionRedeemers, getPromotionNonRedeemers, adminPromotionsSummary, adminTopCustomersByPurchases, adminRecurringPromoCustomers,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
   listPromotionsReadyToActivate, markPromotionActivated,
   updatePromotion, deletePromotion,
@@ -828,6 +828,16 @@ function handleAdminPromotionRedeemers(req, res, query) {
   sendJson(res, 200, { ok: true, items: getPromotionRedeemers(id) });
 }
 
+// El complemento de handleAdminPromotionRedeemers: quiénes NO canjearon
+// ningún código de esta promoción, paginado y con búsqueda — para no traer
+// a los mil clientes de un jalón cuando la promoción tiene poco alcance.
+function handleAdminPromotionNonRedeemers(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  const id = Number(query.get('id'));
+  if (!id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la promoción.' });
+  sendJson(res, 200, { ok: true, ...getPromotionNonRedeemers(id, paginationParams(query)) });
+}
+
 function handleAdminTopCustomers(req, res, query) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
   sendJson(res, 200, {
@@ -843,6 +853,43 @@ function handleAdminTopCustomers(req, res, query) {
 function handleAdminRecurringPromoCustomers(req, res, query) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
   sendJson(res, 200, { ok: true, ...adminRecurringPromoCustomers(paginationParams(query)) });
+}
+
+// Ejecuta `task` sobre cada elemento de `items` con un máximo de
+// `concurrency` llamadas en vuelo a la vez, en vez de disparar todas de
+// golpe con Promise.all (eso satura la API de Google cuando hay miles de
+// usuarios con la tarjeta guardada).
+async function runInBatches(items, concurrency, task) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await task(items[i], i);
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
+
+const WALLET_PUSH_CONCURRENCY = 5;
+
+// Envía en tandas y en segundo plano (sin que nadie tenga que esperarla) el
+// mensaje y la imagen destacada de Google Wallet a la lista de usuarios
+// indicada. Se dispara "fire and forget" a propósito: activatePromotion no
+// puede quedar bloqueada esperando cientos de llamadas a Google antes de
+// responderle al admin. Los errores solo se registran; nunca deben tumbar
+// la respuesta del admin ni el scheduler.
+function sendWalletPromotionPushInBackground(userIds, { title, promoBody, photoUrl }) {
+  runInBatches(userIds, WALLET_PUSH_CONCURRENCY, async (userId) => {
+    await googleWallet.pushLoyaltyMessage(userId, { header: title, body: promoBody });
+    if (photoUrl) {
+      await googleWallet.patchHeroImage(userId, { imageUrl: photoUrl, description: title });
+    }
+  }).catch((err) => {
+    console.error('Error enviando push de Google Wallet en segundo plano:', err);
+  });
 }
 
 // Envía el push (navegador + Google Wallet) de una promoción y la marca
@@ -865,23 +912,15 @@ async function activatePromotion(promotion) {
     markPromotionPushed(id, pushSent);
   }
 
-  let walletPushSent = 0;
+  let walletPushQueued = 0;
   if (googleWallet.isConfigured()) {
     const userIds = listWalletSavedUserIds();
-    const results = await Promise.all(
-      userIds.map((userId) => googleWallet.pushLoyaltyMessage(userId, { header: title, body: promoBody }))
-    );
-    walletPushSent = results.filter((r) => r.ok).length;
-
-    if (photoUrl) {
-      await Promise.all(
-        userIds.map((userId) => googleWallet.patchHeroImage(userId, { imageUrl: photoUrl, description: title }))
-      );
-    }
+    walletPushQueued = userIds.length;
+    sendWalletPromotionPushInBackground(userIds, { title, promoBody, photoUrl });
   }
 
   markPromotionActivated(id);
-  return { pushSent, walletPushSent };
+  return { pushSent, walletPushQueued };
 }
 
 // Programación por día: si starts_at todavía no llegó, la promoción queda
@@ -941,13 +980,13 @@ async function handleAdminPromotionCreate(req, res) {
   });
 
   let pushSent = 0;
-  let walletPushSent = 0;
+  let walletPushQueued = 0;
   const scheduled = !isReadyToActivate(promotion);
   if (!scheduled) {
-    ({ pushSent, walletPushSent } = await activatePromotion(promotion));
+    ({ pushSent, walletPushQueued } = await activatePromotion(promotion));
   }
 
-  sendJson(res, 201, { ok: true, promotion, pushSent, walletPushSent, scheduled });
+  sendJson(res, 201, { ok: true, promotion, pushSent, walletPushQueued, scheduled });
 }
 
 async function handleAdminPromotionDeactivate(req, res) {
@@ -1361,6 +1400,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/admin/promotions') return handleAdminPromotionCreate(req, res);
     if (req.method === 'GET' && url === '/api/admin/promotions/summary') return handleAdminPromotionsSummary(req, res);
     if (req.method === 'GET' && url === '/api/admin/promotions/redeemers') return handleAdminPromotionRedeemers(req, res, query);
+    if (req.method === 'GET' && url === '/api/admin/promotions/non-redeemers') return handleAdminPromotionNonRedeemers(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/reports/top-customers') return handleAdminTopCustomers(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/reports/recurring-promo-customers') return handleAdminRecurringPromoCustomers(req, res, query);
     if (req.method === 'POST' && url === '/api/admin/promotions/deactivate') return handleAdminPromotionDeactivate(req, res);

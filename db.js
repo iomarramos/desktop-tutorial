@@ -1021,6 +1021,67 @@ function getPromotionRedeemers(promotionId) {
   return getPromotionRedeemersStmt.all(promotionId);
 }
 
+const nonRedeemersBaseStmt = db.prepare(
+  `SELECT u.id AS user_id, u.name, u.email, u.created_at
+   FROM users u
+   WHERE u.id NOT IN (
+     SELECT pr.user_id FROM promotion_redemptions pr
+     JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+     WHERE pc.promotion_id = ?
+   )
+   ORDER BY u.created_at DESC
+   LIMIT ? OFFSET ?`
+);
+const nonRedeemersBaseCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total FROM users u
+   WHERE u.id NOT IN (
+     SELECT pr.user_id FROM promotion_redemptions pr
+     JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+     WHERE pc.promotion_id = ?
+   )`
+);
+const nonRedeemersSearchStmt = db.prepare(
+  `SELECT u.id AS user_id, u.name, u.email, u.created_at
+   FROM users u
+   WHERE u.id NOT IN (
+     SELECT pr.user_id FROM promotion_redemptions pr
+     JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+     WHERE pc.promotion_id = ?
+   ) AND (u.name LIKE ? OR u.email LIKE ?)
+   ORDER BY u.created_at DESC
+   LIMIT ? OFFSET ?`
+);
+const nonRedeemersSearchCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total FROM users u
+   WHERE u.id NOT IN (
+     SELECT pr.user_id FROM promotion_redemptions pr
+     JOIN promotion_codes pc ON pc.id = pr.promotion_code_id
+     WHERE pc.promotion_id = ?
+   ) AND (u.name LIKE ? OR u.email LIKE ?)`
+);
+
+// Quiénes NO canjearon ningún código de esta promoción — el complemento de
+// getPromotionRedeemers, paginado y con búsqueda por nombre/correo para no
+// tener que traer a los mil clientes de un jalón.
+function getPromotionNonRedeemers(promotionId, { limit = 20, page = 1, q } = {}) {
+  const p = paginate({ limit, page });
+  if (!q) {
+    return {
+      items: nonRedeemersBaseStmt.all(promotionId, p.limit, p.offset),
+      total: nonRedeemersBaseCountStmt.get(promotionId).total,
+      page: p.page,
+      limit: p.limit,
+    };
+  }
+  const search = `%${q}%`;
+  return {
+    items: nonRedeemersSearchStmt.all(promotionId, search, search, p.limit, p.offset),
+    total: nonRedeemersSearchCountStmt.get(promotionId, search, search).total,
+    page: p.page,
+    limit: p.limit,
+  };
+}
+
 const activePromotionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM promotions WHERE active = 1');
 const distinctPromoRedeemersStmt = db.prepare('SELECT COUNT(DISTINCT user_id) AS total FROM promotion_redemptions');
 
@@ -1518,6 +1579,7 @@ module.exports = {
   createPromotion,
   findActivePromotionByTitle,
   getPromotionRedeemers,
+  getPromotionNonRedeemers,
   adminPromotionsSummary,
   addPromotionCode,
   redeemPromotionCode,

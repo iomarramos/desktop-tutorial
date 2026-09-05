@@ -296,6 +296,9 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
   cuántos nunca canjearon, tasa de canje.
 - `GET /api/admin/promotions/redeemers?id=` — Quién canjeó una promoción
   específica (nombre, email, código usado, fecha).
+- `GET /api/admin/promotions/non-redeemers?id=&page=&limit=&q=` — Quién NO
+  canjeó ningún código de esa promoción todavía, paginado y con búsqueda
+  por nombre/correo (el complemento de `redeemers`).
 - `GET /api/admin/reports/top-customers?page=&limit=&q=&minCompras=&sortBy=`
   — Clientes ordenados por compras, gasto total o frecuencia
   (`sortBy`: `num_compras` | `total_gastado` | `comprasPorSemana`).
@@ -462,9 +465,20 @@ pliega mayúsculas ASCII (no reconocería "FRAPPÉS" como igual a "frappés").
   quienes repiten, no solo a quienes canjearon mucho una sola vez.
 
 **En la pestaña Promociones**, cada promoción ahora muestra "canjeada por
-N cliente(s)" y un botón **Ver quiénes canjearon** con el detalle (nombre,
-email, código usado, fecha). Quiénes *no* canjearon se calculan restando
-esa lista del total de clientes (el resumen ya trae ese número).
+N cliente(s)" y dos botones: **Ver quiénes canjearon** (nombre, email,
+código usado, fecha) y **Ver quiénes NO canjearon** — este último paginado
+y con búsqueda por nombre/correo, porque la lista de quienes faltan por
+canjear puede acercarse al total de clientes.
+
+**Envío a Google Wallet en tandas**: al activar una promoción (de
+inmediato o cuando le toca por el scheduler), el mensaje y la imagen
+destacada de Google Wallet se envían en segundo plano con un máximo de 5
+llamadas simultáneas a la API de Google (`runInBatches` en `server.js`),
+en vez de un `Promise.all` sin límite que golpearía a Google con cientos
+de llamadas a la vez. La respuesta al admin ya no espera a que termine ese
+envío — `walletPushQueued` indica cuántos quedaron encolados, no cuántos
+ya se confirmaron entregados (los errores individuales solo se registran
+en el log del servidor).
 
 ## Roadmap: envío de campañas por WhatsApp (planeado, no implementado)
 
