@@ -363,6 +363,15 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </div>
 
 <script>
+// Cualquier dato que muestre otro cliente (nombre de un miembro de tu grupo
+// familiar, nombre de producto, etc.) pasa por acá antes de insertarse con
+// innerHTML, para que no pueda ejecutar código en tu navegador.
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 const views = ['login', 'profile-complete', 'extra-fields', '2fa-setup', '2fa-verify', 'wallet'];
 function showView(name){
   document.getElementById('loading').classList.add('hidden');
@@ -455,8 +464,8 @@ function renderExtraFieldsForm(fields){
   fields.forEach(f => {
     const div = document.createElement('div');
     div.className = 'field';
-    div.innerHTML = `<label for="extra-field-${f.id}">${f.label}${f.required ? ' *' : ''}</label>
-      <input type="${inputTypeFor(f.field_type)}" id="extra-field-${f.id}" data-field-id="${f.id}">`;
+    div.innerHTML = `<label for="extra-field-${f.id}">${escapeHtml(f.label)}${f.required ? ' *' : ''}</label>
+      <input type="${escapeHtml(inputTypeFor(f.field_type))}" id="extra-field-${f.id}" data-field-id="${f.id}">`;
     container.appendChild(div);
   });
 }
@@ -659,7 +668,7 @@ async function loadPurchases(){
   document.getElementById('purchases-empty').classList.add('hidden');
   data.items.forEach(p => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${p.created_at}</td><td>${p.producto || '—'}</td><td>S/ ${p.monto.toFixed(2)}</td><td>+${p.puntos}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(p.created_at)}</td><td>${escapeHtml(p.producto) || '—'}</td><td>S/ ${p.monto.toFixed(2)}</td><td>+${p.puntos}</td>`;
     body.appendChild(tr);
   });
 }
@@ -684,8 +693,8 @@ function renderExtraInfoCard(fields){
   fields.forEach(f => {
     const div = document.createElement('div');
     div.className = 'field';
-    div.innerHTML = `<label for="extra-info-${f.id}">${f.label}${f.required ? ' *' : ''}</label>
-      <input type="${inputTypeFor(f.field_type)}" id="extra-info-${f.id}" data-field-id="${f.id}" value="${f.value || ''}">`;
+    div.innerHTML = `<label for="extra-info-${f.id}">${escapeHtml(f.label)}${f.required ? ' *' : ''}</label>
+      <input type="${escapeHtml(inputTypeFor(f.field_type))}" id="extra-info-${f.id}" data-field-id="${f.id}" value="${escapeHtml(f.value)}">`;
     container.appendChild(div);
   });
 }
@@ -748,7 +757,7 @@ function showPromoPopup(promo){
   document.getElementById('popup-title').textContent = promo.title;
   document.getElementById('popup-body').textContent = promo.body;
   document.getElementById('popup-vigencia').textContent = [formatVigencia(promo), formatCountdown(promo.ends_at)].filter(Boolean).join(' · ');
-  document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+  document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${escapeHtml(p.name)}</span>`).join('');
   document.getElementById('promo-popup').classList.add('show');
   markPromoSeen(promo.publication_code);
 }
@@ -762,14 +771,14 @@ async function loadPromotions(){
   data.items.forEach(promo => {
     const div = document.createElement('div');
     div.className = 'promo';
-    const photo = promo.photo_url ? `<img class="promo-photo" src="${promo.photo_url}" alt="">` : '';
+    const photo = promo.photo_url ? `<img class="promo-photo" src="${escapeHtml(promo.photo_url)}" alt="">` : '';
     const vigencia = formatVigencia(promo);
-    const chips = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+    const chips = (promo.products || []).map(p => `<span class="chip">${escapeHtml(p.name)}</span>`).join('');
     div.innerHTML = `${photo}<div class="promo-body">
-        <b>📣 ${promo.title}</b>
-        <p>${promo.body}</p>
-        ${vigencia ? `<p class="vigencia">${vigencia}</p>` : ''}
-        ${promo.ends_at ? `<p class="vigencia countdown" data-ends="${promo.ends_at}"></p>` : ''}
+        <b>📣 ${escapeHtml(promo.title)}</b>
+        <p>${escapeHtml(promo.body)}</p>
+        ${vigencia ? `<p class="vigencia">${escapeHtml(vigencia)}</p>` : ''}
+        ${promo.ends_at ? `<p class="vigencia countdown" data-ends="${escapeHtml(promo.ends_at)}"></p>` : ''}
         <div>${chips}</div>
       </div><button class="promo-close" aria-label="Cerrar">✕</button>`;
     div.querySelector('.promo-close').onclick = () => div.remove();

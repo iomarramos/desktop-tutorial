@@ -351,3 +351,69 @@ test('campos de perfil: no se puede borrar un campo con valores, sí desactivar'
   assert.equal(updated.active, 0);
   assert.ok(!db.listActiveProfileFields().some((f) => f.id === field.id));
 });
+
+// ───────────────────────── concurrencia: operaciones atómicas ─────────────────────────
+
+test('concurrencia: redeemPoints nunca deja el saldo negativo bajo intentos repetidos', () => {
+  const user = makeUser('Concurrencia puntos');
+  db.addPurchase({ userId: user.id, monto: 50, producto: 'x' }); // 10 puntos
+
+  const results = Array.from({ length: 5 }, () => {
+    try { db.redeemPoints(user.id, 3, 'test'); return true; } catch { return false; }
+  });
+  assert.equal(results.filter(Boolean).length, 3); // 3x3=9 <= 10, un 4to ya no alcanza
+  assert.equal(db.getPointsBalance(user.id), 1);
+  assert.ok(db.getPointsBalance(user.id) >= 0);
+});
+
+test('concurrencia: un código con max_uses nunca se canjea más veces de lo permitido', () => {
+  const promo = db.createPromotion({ title: 'Concurrencia promo', body: 'x' });
+  db.addPromotionCode(promo.id, { code: 'CONC1', label: null, maxUses: 3 });
+
+  const users = Array.from({ length: 10 }, (_, i) => makeUser(`Conc${i}`));
+  const results = users.map((u) => {
+    try { db.redeemPromotionCode('CONC1', u.id); return true; } catch { return false; }
+  });
+  assert.equal(results.filter(Boolean).length, 3);
+});
+
+test('concurrencia: spinWheel solo permite un giro exitoso bajo intentos repetidos', () => {
+  const user = makeUser('Concurrencia ruleta');
+  const results = Array.from({ length: 5 }, () => {
+    try { db.spinWheel(user.id); return true; } catch { return false; }
+  });
+  assert.equal(results.filter(Boolean).length, 1);
+});
+
+// ───────────────────────── listados admin: batch en vez de N+1 ─────────────────────────
+
+test('adminListFamilyGroups: cada grupo trae solo sus propios miembros', () => {
+  const ownerA = makeUser('Owner batch A');
+  const ownerB = makeUser('Owner batch B');
+  const memberA = makeUser('Member batch A');
+  const memberB = makeUser('Member batch B');
+  const groupA = db.createFamilyGroup(ownerA.id, 'Grupo Batch A');
+  const groupB = db.createFamilyGroup(ownerB.id, 'Grupo Batch B');
+  db.joinFamilyGroup(memberA.id, groupA.invite_code);
+  db.joinFamilyGroup(memberB.id, groupB.invite_code);
+
+  const items = db.adminListFamilyGroups({ limit: 50 }).items;
+  const a = items.find((g) => g.id === groupA.id);
+  const b = items.find((g) => g.id === groupB.id);
+  assert.deepEqual(a.members.map((m) => m.name).sort(), ['Member batch A', 'Owner batch A'].sort());
+  assert.deepEqual(b.members.map((m) => m.name).sort(), ['Member batch B', 'Owner batch B'].sort());
+});
+
+test('adminListPromotions: cada promoción trae solo sus propios códigos', () => {
+  const promoA = db.createPromotion({ title: 'Batch promo A', body: 'x' });
+  const promoB = db.createPromotion({ title: 'Batch promo B', body: 'x' });
+  db.addPromotionCode(promoA.id, { code: 'BATCHA', label: null, maxUses: null });
+  db.addPromotionCode(promoB.id, { code: 'BATCHB1', label: null, maxUses: null });
+  db.addPromotionCode(promoB.id, { code: 'BATCHB2', label: null, maxUses: null });
+
+  const items = db.adminListPromotions({ limit: 50 }).items;
+  const a = items.find((p) => p.id === promoA.id);
+  const b = items.find((p) => p.id === promoB.id);
+  assert.deepEqual(a.codes.map((c) => c.code), ['BATCHA']);
+  assert.deepEqual(b.codes.map((c) => c.code).sort(), ['BATCHB1', 'BATCHB2']);
+});

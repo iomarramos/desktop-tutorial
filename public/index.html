@@ -193,6 +193,12 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 </div>
 
 <script>
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 /* ═══ COUNTDOWN a apertura (29 oct 2026, 9:00 AM Perú) ═══ */
 const target=new Date('2026-10-29T09:00:00-05:00').getTime();
 const pad=n=>String(n).padStart(2,'0');
@@ -340,7 +346,7 @@ async function loadPromoPopup(){
     document.getElementById('popup-title').textContent = promo.title;
     document.getElementById('popup-body').textContent = promo.body;
     document.getElementById('popup-vigencia').textContent = formatVigencia(promo) + formatCountdown(promo.ends_at);
-    document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${p.name}</span>`).join('');
+    document.getElementById('popup-chips').innerHTML = (promo.products || []).map(p => `<span class="chip">${escapeHtml(p.name)}</span>`).join('');
     document.getElementById('promo-popup').classList.add('show');
     markPromoSeen(promo.publication_code);
   }catch{ /* sin conexión: no mostrar popup */ }

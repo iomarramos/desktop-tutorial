@@ -112,6 +112,13 @@ variable de entorno `PORT`).
   `promotions`, `promotion_products`, `promotion_codes`,
   `promotion_redemptions`, `push_subscriptions`, `profile_fields` +
   `user_profile_values` (campos de perfil dinámicos, ver más abajo).
+  Corre en modo **WAL** (`PRAGMA journal_mode = WAL`, lecturas y escrituras
+  no se bloquean entre sí) con `busy_timeout = 5000` (una escritura que
+  choca con otra espera hasta 5s en vez de fallar al toque). Índices en
+  todas las columnas por las que se filtra seguido (`user_id`,
+  `family_group_id`, `referred_by`, etc.). Los listados del admin
+  (grupos familiares, promociones) traen los datos relacionados de toda
+  la página en una sola consulta extra en vez de una por fila.
 - `auth/google.js`: flujo OAuth2 con Google (authorization code + verificación
   del `id_token` vía el endpoint `tokeninfo` de Google).
 - `auth/totp.js`: generación y verificación de códigos TOTP (RFC 6238) para
@@ -344,6 +351,26 @@ Poner cualquiera de las dos en `0` la desactiva.
   conexión llega por HTTPS.
 - El endpoint público `GET /api/promotions` nunca expone los códigos de
   canje de una promoción (ver "Modelo de promociones" arriba).
+- **XSS**: todo dato que el cliente controla (nombre de grupo familiar,
+  nombre/email de usuario — viene de Google, no sanitizado por ellos —,
+  título/cuerpo de promo, nombre de producto, valores de campos de perfil,
+  etc.) se escapa con `escapeHtml()` antes de insertarse con `innerHTML` en
+  `admin.html`, `cuenta.html` e `index.html`. El caso más directo era el
+  nombre de un grupo familiar (el cliente lo escribe él mismo, sin filtro)
+  — un nombre con código podía llegar a ejecutarse en la pantalla del
+  administrador al abrir la pestaña "Compartidos". Verificado con
+  Playwright creando un grupo con un payload real: se confirma que se
+  muestra como texto plano y no se ejecuta nada.
+- **Condiciones de carrera**: canjear puntos, canjear un código de promoción
+  con límite de usos, y girar la ruleta, antes revisaban una condición y
+  escribían el resultado en dos pasos separados — inofensivo en un solo
+  proceso, pero una base fragil de cara a escalar a más de un proceso o
+  réplica. Ahora cada uno es **una sola sentencia SQL atómica**
+  (`INSERT ... WHERE saldo >= X` / `UPDATE ... WHERE usos < max_usos`), así
+  que el límite se respeta exacto sin importar cuántos procesos compartan
+  la base. Verificado con una prueba de 10 clientes canjeando el mismo
+  código con `max_uses: 3` en la misma ráfaga: exactamente 3 se aceptan,
+  el resto recibe `CODE_EXHAUSTED`.
 
 ## Tests
 

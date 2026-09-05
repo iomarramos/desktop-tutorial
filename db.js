@@ -12,6 +12,13 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 
+// WAL: permite que las lecturas sigan corriendo mientras hay una escritura
+// en curso, en vez de bloquearse entre sí (el modo por defecto de SQLite).
+// busy_timeout: si dos escrituras sí chocan, espera hasta 5s reintentando
+// en vez de fallar al toque con SQLITE_BUSY.
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA busy_timeout = 5000');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS subscribers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +220,8 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_promo_products_promo ON promotion_produc
 db.exec('CREATE INDEX IF NOT EXISTS idx_promo_codes_promo ON promotion_codes(promotion_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_promo_redemptions_code ON promotion_redemptions(promotion_code_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_profile_values_user ON user_profile_values(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_family_group ON users(family_group_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by)');
 
 const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process.env.SOLES_PER_PUNTO) : 5;
 const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
@@ -284,7 +293,6 @@ const enableTotpStmt = db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = 
 const setFamilyGroupStmt = db.prepare('UPDATE users SET family_group_id = ? WHERE id = ?');
 const markWalletSavedStmt = db.prepare("UPDATE users SET wallet_saved_at = datetime('now') WHERE id = ?");
 const listWalletSavedUserIdsStmt = db.prepare('SELECT id FROM users WHERE wallet_saved_at IS NOT NULL');
-const setLastSpinStmt = db.prepare("UPDATE users SET last_spin_at = datetime('now') WHERE id = ?");
 
 function upsertGoogleUser({ googleId, email, name, avatarUrl }) {
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -444,6 +452,16 @@ const insertLedgerStmt = db.prepare(
 const balanceStmt = db.prepare(
   'SELECT COALESCE(SUM(delta), 0) AS balance FROM points_ledger WHERE user_id = ?'
 );
+// El "revisar saldo y luego escribir" en dos pasos separados sería una
+// condición de carrera bajo más de un proceso compartiendo la misma base;
+// esta versión hace el chequeo y la escritura en una sola sentencia SQL
+// (el WHERE de la subquery corre atómicamente dentro del propio INSERT),
+// así que es segura sin importar cuántos procesos la llamen a la vez.
+const insertLedgerIfBalanceStmt = db.prepare(`
+  INSERT INTO points_ledger (user_id, delta, reason)
+  SELECT ?, ?, ?
+  WHERE (SELECT COALESCE(SUM(delta), 0) FROM points_ledger WHERE user_id = ?) >= ?
+`);
 const listPurchasesByUserStmt = db.prepare(
   `SELECT id, monto, producto, puntos, created_at FROM purchases
    WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`
@@ -473,8 +491,8 @@ function listPurchasesByUser(userId, { limit = 20, page = 1 } = {}) {
 function redeemPoints(userId, puntos, motivo) {
   const amount = Math.floor(Number(puntos));
   if (!(amount > 0)) throw new Error('INVALID_AMOUNT');
-  if (getPointsBalance(userId) < amount) throw new Error('INSUFFICIENT_BALANCE');
-  insertLedgerStmt.run(userId, -amount, motivo || 'Canje');
+  const claimed = insertLedgerIfBalanceStmt.run(userId, -amount, motivo || 'Canje', userId, amount);
+  if (claimed.changes === 0) throw new Error('INSUFFICIENT_BALANCE');
   return getPointsBalance(userId);
 }
 
@@ -564,13 +582,20 @@ function getSpinStatus(userId) {
   };
 }
 
+// Reclama el giro (revisa el cooldown y marca last_spin_at) en una sola
+// sentencia atómica — el WHERE decide, dentro del propio UPDATE, si a este
+// usuario ya le tocaba girar de nuevo. Dos giros simultáneos del mismo
+// usuario no pueden ganar los dos: solo el primero cambia una fila.
+const claimSpinStmt = db.prepare(
+  `UPDATE users SET last_spin_at = datetime('now')
+   WHERE id = ? AND (last_spin_at IS NULL OR datetime(last_spin_at, '+' || ? || ' hours') <= datetime('now'))`
+);
+
 function spinWheel(userId) {
-  const user = getUserByIdStmt.get(userId);
-  const next = nextSpinAt(user);
-  if (next && next > new Date()) throw new Error('SPIN_COOLDOWN');
+  const claimed = claimSpinStmt.run(userId, SPIN_COOLDOWN_HOURS);
+  if (claimed.changes === 0) throw new Error('SPIN_COOLDOWN');
 
   const prize = pickSpinPrize();
-  setLastSpinStmt.run(userId);
   if (prize.points > 0) {
     insertLedgerStmt.run(userId, prize.points, `Ruleta: ${prize.label}`);
   }
@@ -838,8 +863,13 @@ const listPromotionCodesStmt = db.prepare(
   'SELECT * FROM promotion_codes WHERE promotion_id = ? ORDER BY id'
 );
 const getPromotionCodeByCodeStmt = db.prepare('SELECT * FROM promotion_codes WHERE code = ?');
-const incrementPromotionCodeUsesStmt = db.prepare(
-  'UPDATE promotion_codes SET uses_count = uses_count + 1 WHERE id = ?'
+// Reclama un uso del código y revisa el límite en una sola sentencia
+// atómica — si dos clientes canjean el mismo código al mismo tiempo y solo
+// queda un uso disponible, el WHERE garantiza que como mucho uno de los dos
+// UPDATE afecte una fila; el otro ve changes=0 y sabe que se agotó.
+const claimPromotionCodeUseStmt = db.prepare(
+  `UPDATE promotion_codes SET uses_count = uses_count + 1
+   WHERE id = ? AND (max_uses IS NULL OR uses_count < max_uses)`
 );
 const insertPromotionRedemptionStmt = db.prepare(
   'INSERT INTO promotion_redemptions (promotion_code_id, user_id) VALUES (?, ?)'
@@ -848,6 +878,8 @@ const insertPromotionRedemptionStmt = db.prepare(
 function generatePublicationCode(promotionId) {
   return `PROMO-${String(promotionId).padStart(4, '0')}`;
 }
+
+const setPromotionPublicationCodeStmt = db.prepare('UPDATE promotions SET publication_code = ? WHERE id = ?');
 
 // Uso interno/admin: incluye los códigos de canje (uso interno del staff).
 function hydratePromotion(promotion) {
@@ -870,7 +902,7 @@ function hydratePromotionPublic(promotion) {
 function createPromotion({ title, body, photoUrl, startsAt, endsAt, productIds = [] }) {
   const info = insertPromotionStmt.run(title, body, photoUrl || null, startsAt || null, endsAt || null, null);
   const id = info.lastInsertRowid;
-  db.prepare('UPDATE promotions SET publication_code = ? WHERE id = ?').run(generatePublicationCode(id), id);
+  setPromotionPublicationCodeStmt.run(generatePublicationCode(id), id);
   for (const productId of productIds) {
     insertPromotionProductStmt.run(id, productId);
   }
@@ -892,9 +924,9 @@ function redeemPromotionCode(code, userId) {
   const now = new Date();
   if (promotion.starts_at && new Date(promotion.starts_at) > now) throw new Error('PROMOTION_NOT_STARTED');
   if (promotion.ends_at && new Date(promotion.ends_at) < now) throw new Error('PROMOTION_EXPIRED');
-  if (promoCode.max_uses != null && promoCode.uses_count >= promoCode.max_uses) throw new Error('CODE_EXHAUSTED');
 
-  incrementPromotionCodeUsesStmt.run(promoCode.id);
+  const claimed = claimPromotionCodeUseStmt.run(promoCode.id);
+  if (claimed.changes === 0) throw new Error('CODE_EXHAUSTED');
   insertPromotionRedemptionStmt.run(promoCode.id, userId);
   // Solo se devuelve el código canjeado, no el resto de códigos de la
   // promoción (podrían ser de otra sucursal/tanda y no le corresponden a este cliente).
@@ -908,10 +940,51 @@ function listActivePromotions() {
   return listActivePromotionsRawStmt.all().map(hydratePromotionPublic);
 }
 
+// Trae productos/códigos de TODAS las promociones de la página en dos
+// consultas (en vez de dos por fila) — evita el N+1 al listar promociones.
+function productsByPromotionId(promotionIds) {
+  const map = new Map();
+  if (promotionIds.length === 0) return map;
+  const placeholders = promotionIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT pp.promotion_id AS promotion_id, pr.* FROM promotion_products pp
+     JOIN products pr ON pr.id = pp.product_id
+     WHERE pp.promotion_id IN (${placeholders})
+     ORDER BY pr.name`
+  ).all(...promotionIds);
+  for (const { promotion_id, ...product } of rows) {
+    if (!map.has(promotion_id)) map.set(promotion_id, []);
+    map.get(promotion_id).push(product);
+  }
+  return map;
+}
+
+function codesByPromotionId(promotionIds) {
+  const map = new Map();
+  if (promotionIds.length === 0) return map;
+  const placeholders = promotionIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT * FROM promotion_codes WHERE promotion_id IN (${placeholders}) ORDER BY id`
+  ).all(...promotionIds);
+  for (const row of rows) {
+    if (!map.has(row.promotion_id)) map.set(row.promotion_id, []);
+    map.get(row.promotion_id).push(row);
+  }
+  return map;
+}
+
 function adminListPromotions({ limit = 20, page = 1 } = {}) {
   const p = paginate({ limit, page });
+  const promotions = adminListPromotionsStmt.all(p.limit, p.offset);
+  const ids = promotions.map((promo) => promo.id);
+  const productsMap = productsByPromotionId(ids);
+  const codesMap = codesByPromotionId(ids);
   return {
-    items: adminListPromotionsStmt.all(p.limit, p.offset).map(hydratePromotion),
+    items: promotions.map((promo) => ({
+      ...promo,
+      products: productsMap.get(promo.id) || [],
+      codes: codesMap.get(promo.id) || [],
+    })),
     total: adminPromotionsCountStmt.get().total,
     page: p.page,
     limit: p.limit,
@@ -1021,6 +1094,19 @@ const adminUsersStmt = db.prepare(
    LIMIT ? OFFSET ?`
 );
 const adminUsersCountStmt = db.prepare('SELECT COUNT(*) AS total FROM users');
+const adminUsersSearchStmt = db.prepare(`
+  SELECT u.id, u.name, u.email, u.avatar_url, u.totp_enabled, u.created_at,
+         u.dni, u.telefono,
+         u.referred_by, u.family_group_id,
+         COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos,
+         COALESCE((SELECT SUM(monto) FROM purchases p WHERE p.user_id = u.id), 0) AS total_gastado,
+         COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras
+  FROM users u
+  WHERE u.name LIKE ? OR u.email LIKE ?
+  ORDER BY u.created_at DESC
+  LIMIT ? OFFSET ?
+`);
+const adminUsersSearchCountStmt = db.prepare('SELECT COUNT(*) AS total FROM users WHERE name LIKE ? OR email LIKE ?');
 
 function adminListUsers({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
@@ -1033,22 +1119,9 @@ function adminListUsers({ limit = 20, page = 1, q } = {}) {
     };
   }
   const search = `%${q}%`;
-  const stmt = db.prepare(`
-    SELECT u.id, u.name, u.email, u.avatar_url, u.totp_enabled, u.created_at,
-           u.dni, u.telefono,
-           u.referred_by, u.family_group_id,
-           COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos,
-           COALESCE((SELECT SUM(monto) FROM purchases p WHERE p.user_id = u.id), 0) AS total_gastado,
-           COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras
-    FROM users u
-    WHERE u.name LIKE ? OR u.email LIKE ?
-    ORDER BY u.created_at DESC
-    LIMIT ? OFFSET ?
-  `);
-  const countStmt = db.prepare('SELECT COUNT(*) AS total FROM users WHERE name LIKE ? OR email LIKE ?');
   return {
-    items: stmt.all(search, search, p.limit, p.offset),
-    total: countStmt.get(search, search).total,
+    items: adminUsersSearchStmt.all(search, search, p.limit, p.offset),
+    total: adminUsersSearchCountStmt.get(search, search).total,
     page: p.page,
     limit: p.limit,
   };
@@ -1065,6 +1138,21 @@ const adminReferralsStmt = db.prepare(
    LIMIT ? OFFSET ?`
 );
 const adminReferralsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM users WHERE referred_by IS NOT NULL');
+const adminReferralsSearchStmt = db.prepare(`
+  SELECT u.id, u.name, u.email, u.created_at AS fecha_registro,
+         r.id AS referrer_id, r.name AS referrer_name, r.email AS referrer_email,
+         COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras,
+         COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos
+  FROM users u
+  JOIN users r ON r.id = u.referred_by
+  WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?
+  ORDER BY u.created_at DESC
+  LIMIT ? OFFSET ?
+`);
+const adminReferralsSearchCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total FROM users u JOIN users r ON r.id = u.referred_by
+   WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?`
+);
 
 function adminListReferrals({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
@@ -1077,24 +1165,9 @@ function adminListReferrals({ limit = 20, page = 1, q } = {}) {
     };
   }
   const search = `%${q}%`;
-  const stmt = db.prepare(`
-    SELECT u.id, u.name, u.email, u.created_at AS fecha_registro,
-           r.id AS referrer_id, r.name AS referrer_name, r.email AS referrer_email,
-           COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.id), 0) AS num_compras,
-           COALESCE((SELECT SUM(delta) FROM points_ledger l WHERE l.user_id = u.id), 0) AS puntos
-    FROM users u
-    JOIN users r ON r.id = u.referred_by
-    WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?
-    ORDER BY u.created_at DESC
-    LIMIT ? OFFSET ?
-  `);
-  const countStmt = db.prepare(
-    `SELECT COUNT(*) AS total FROM users u JOIN users r ON r.id = u.referred_by
-     WHERE u.name LIKE ? OR u.email LIKE ? OR r.name LIKE ? OR r.email LIKE ?`
-  );
   return {
-    items: stmt.all(search, search, search, search, p.limit, p.offset),
-    total: countStmt.get(search, search, search, search).total,
+    items: adminReferralsSearchStmt.all(search, search, search, search, p.limit, p.offset),
+    total: adminReferralsSearchCountStmt.get(search, search, search, search).total,
     page: p.page,
     limit: p.limit,
   };
@@ -1110,12 +1183,27 @@ const adminFamilyGroupsStmt = db.prepare(
 );
 const adminFamilyGroupsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM family_groups');
 
+// Trae los miembros de TODOS los grupos de la página en una sola consulta
+// (en vez de una consulta por grupo) — evita el N+1 al listar grupos.
+function membersByGroupId(groupIds) {
+  const membersByGroup = new Map();
+  if (groupIds.length === 0) return membersByGroup;
+  const placeholders = groupIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id, name, email, avatar_url, family_group_id FROM users WHERE family_group_id IN (${placeholders})`
+  ).all(...groupIds);
+  for (const row of rows) {
+    if (!membersByGroup.has(row.family_group_id)) membersByGroup.set(row.family_group_id, []);
+    membersByGroup.get(row.family_group_id).push(row);
+  }
+  return membersByGroup;
+}
+
 function adminListFamilyGroups({ limit = 20, page = 1 } = {}) {
   const p = paginate({ limit, page });
-  const items = adminFamilyGroupsStmt.all(p.limit, p.offset).map((g) => ({
-    ...g,
-    members: listFamilyMembersStmt.all(g.id),
-  }));
+  const groups = adminFamilyGroupsStmt.all(p.limit, p.offset);
+  const membersByGroup = membersByGroupId(groups.map((g) => g.id));
+  const items = groups.map((g) => ({ ...g, members: membersByGroup.get(g.id) || [] }));
   return {
     items,
     total: adminFamilyGroupsCountStmt.get().total,
@@ -1132,6 +1220,18 @@ const adminPurchasesStmt = db.prepare(
    LIMIT ? OFFSET ?`
 );
 const adminPurchasesCountStmt = db.prepare('SELECT COUNT(*) AS total FROM purchases');
+const adminPurchasesSearchStmt = db.prepare(`
+  SELECT p.id, p.monto, p.producto, p.puntos, p.created_at, u.name AS user_name, u.email AS user_email
+  FROM purchases p
+  JOIN users u ON u.id = p.user_id
+  WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?
+  ORDER BY p.id DESC
+  LIMIT ? OFFSET ?
+`);
+const adminPurchasesSearchCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total FROM purchases p JOIN users u ON u.id = p.user_id
+   WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?`
+);
 
 function adminListPurchases({ limit = 20, page = 1, q } = {}) {
   const p = paginate({ limit, page });
@@ -1144,21 +1244,9 @@ function adminListPurchases({ limit = 20, page = 1, q } = {}) {
     };
   }
   const search = `%${q}%`;
-  const stmt = db.prepare(`
-    SELECT p.id, p.monto, p.producto, p.puntos, p.created_at, u.name AS user_name, u.email AS user_email
-    FROM purchases p
-    JOIN users u ON u.id = p.user_id
-    WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?
-    ORDER BY p.id DESC
-    LIMIT ? OFFSET ?
-  `);
-  const countStmt = db.prepare(
-    `SELECT COUNT(*) AS total FROM purchases p JOIN users u ON u.id = p.user_id
-     WHERE u.name LIKE ? OR u.email LIKE ? OR p.producto LIKE ?`
-  );
   return {
-    items: stmt.all(search, search, search, p.limit, p.offset),
-    total: countStmt.get(search, search, search).total,
+    items: adminPurchasesSearchStmt.all(search, search, search, p.limit, p.offset),
+    total: adminPurchasesSearchCountStmt.get(search, search, search).total,
     page: p.page,
     limit: p.limit,
   };

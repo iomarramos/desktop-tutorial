@@ -338,6 +338,17 @@ textarea{resize:vertical;min-height:70px}
 </main>
 
 <script>
+// Todo dato que venga de un cliente o de otro admin (nombre, email, nombre
+// de grupo familiar, título/cuerpo de promo, etc.) pasa por acá antes de
+// insertarse con innerHTML — si no, alguien podría meter código en un campo
+// de texto (ej. el nombre de un grupo familiar) y que corra en la pantalla
+// del administrador que lo esté viendo.
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 let ADMIN_TOKEN = sessionStorage.getItem('admin_token') || '';
 const pageState = { usuarios: 1, referidos: 1, familias: 1, compras: 1, promos: 1 };
 const searchState = { usuarios: '', referidos: '', compras: '' };
@@ -493,8 +504,8 @@ async function loadUsuarios(page = pageState.usuarios){
   document.getElementById('usuarios-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(u => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${u.name}</td><td>${u.email}</td><td>${u.dni || '—'}</td><td>${u.telefono || '—'}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
-      <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${u.created_at}</td><td></td>`;
+    tr.innerHTML = `<td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.email)}</td><td>${escapeHtml(u.dni) || '—'}</td><td>${escapeHtml(u.telefono) || '—'}</td><td>${u.puntos} ⭐</td><td>${u.num_compras}</td>
+      <td>S/ ${Number(u.total_gastado).toFixed(2)}</td><td>${u.totp_enabled ? '✅' : '—'}</td><td>${escapeHtml(u.created_at)}</td><td></td>`;
     const actionTd = tr.lastElementChild;
     const btn = document.createElement('button');
     btn.className = 'btn ghost small';
@@ -535,8 +546,8 @@ async function loadReferidos(page = pageState.referidos){
   document.getElementById('referidos-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.name} (${r.email})</td><td>${r.referrer_name} (${r.referrer_email})</td>
-      <td>${r.num_compras}</td><td>${r.puntos} ⭐</td><td>${r.fecha_registro}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(r.name)} (${escapeHtml(r.email)})</td><td>${escapeHtml(r.referrer_name)} (${escapeHtml(r.referrer_email)})</td>
+      <td>${r.num_compras}</td><td>${r.puntos} ⭐</td><td>${escapeHtml(r.fecha_registro)}</td>`;
     body.appendChild(tr);
   });
   renderPager('referidos-pager', data.page, data.total, data.limit, loadReferidos);
@@ -550,8 +561,8 @@ async function loadFamilias(page = pageState.familias){
   document.getElementById('familias-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(g => {
     const tr = document.createElement('tr');
-    const members = g.members.map(m => m.name).join(', ') || '—';
-    tr.innerHTML = `<td>${g.name}</td><td>${g.owner_name}</td><td><code>${g.invite_code}</code></td><td>${members} (${g.num_miembros})</td>`;
+    const members = g.members.map(m => escapeHtml(m.name)).join(', ') || '—';
+    tr.innerHTML = `<td>${escapeHtml(g.name)}</td><td>${escapeHtml(g.owner_name)}</td><td><code>${escapeHtml(g.invite_code)}</code></td><td>${members} (${g.num_miembros})</td>`;
     body.appendChild(tr);
   });
   renderPager('familias-pager', data.page, data.total, data.limit, loadFamilias);
@@ -566,7 +577,7 @@ async function loadCompras(page = pageState.compras){
   document.getElementById('compras-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(p => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${p.created_at}</td><td>${p.user_name} (${p.user_email})</td><td>${p.producto || '—'}</td>
+    tr.innerHTML = `<td>${escapeHtml(p.created_at)}</td><td>${escapeHtml(p.user_name)} (${escapeHtml(p.user_email)})</td><td>${escapeHtml(p.producto) || '—'}</td>
       <td>S/ ${Number(p.monto).toFixed(2)}</td><td>+${p.puntos} ⭐</td>`;
     body.appendChild(tr);
   });
@@ -584,8 +595,8 @@ async function loadProductCheckboxes(){
   data.items.forEach(prod => {
     const label = document.createElement('label');
     label.className = 'checkbox-item';
-    const photo = prod.photo_url ? `<img src="${prod.photo_url}" alt="">` : '';
-    label.innerHTML = `<input type="checkbox" value="${prod.id}"> ${photo}<span>${prod.name}</span>`;
+    const photo = prod.photo_url ? `<img src="${escapeHtml(prod.photo_url)}" alt="">` : '';
+    label.innerHTML = `<input type="checkbox" value="${prod.id}"> ${photo}<span>${escapeHtml(prod.name)}</span>`;
     el.appendChild(label);
   });
 }
@@ -608,11 +619,11 @@ async function loadPromos(page = pageState.promos){
     const row = document.createElement('div');
     row.className = `promo-row ${p.active ? '' : 'inactive'}`;
 
-    const photoImg = p.photo_url ? `<img class="promo-photo" src="${p.photo_url}" alt="">` : '';
-    const productChips = (p.products || []).map(prod => `<span class="chip">${prod.name}</span>`).join('') || '<span class="empty" style="padding:0">Sin productos asociados</span>';
+    const photoImg = p.photo_url ? `<img class="promo-photo" src="${escapeHtml(p.photo_url)}" alt="">` : '';
+    const productChips = (p.products || []).map(prod => `<span class="chip">${escapeHtml(prod.name)}</span>`).join('') || '<span class="empty" style="padding:0">Sin productos asociados</span>';
     const codesHtml = (p.codes || []).map(c => `
       <div class="code-row">
-        <span><code>${c.code}</code> ${c.label ? `— ${c.label}` : ''}</span>
+        <span><code>${escapeHtml(c.code)}</code> ${c.label ? `— ${escapeHtml(c.label)}` : ''}</span>
         <span class="pill">${c.uses_count}${c.max_uses ? ' / ' + c.max_uses : ''} usos</span>
       </div>`).join('');
 
@@ -621,12 +632,12 @@ async function loadPromos(page = pageState.promos){
     main.innerHTML = `
       ${photoImg}
       <div style="flex:1;min-width:0">
-        <b>${p.title}</b> ${p.active ? '' : '<span class="pill">Inactiva</span>'}
-        <span class="pill">${p.publication_code || ''}</span>
+        <b>${escapeHtml(p.title)}</b> ${p.active ? '' : '<span class="pill">Inactiva</span>'}
+        <span class="pill">${escapeHtml(p.publication_code) || ''}</span>
         ${p.activated_at
           ? `<span class="pill">✅ Enviada el ${fmtDate(p.activated_at)}</span>`
           : `<span class="pill warn">📅 Programada — se enviará el ${fmtDate(p.starts_at)}</span>`}
-        <p style="font-size:.85rem;margin-top:.3rem">${p.body}</p>
+        <p style="font-size:.85rem;margin-top:.3rem">${escapeHtml(p.body)}</p>
         <p style="font-size:.72rem;opacity:.6;margin-top:.3rem">
           Vigencia: ${fmtDate(p.starts_at)} → ${fmtDate(p.ends_at)} · enviada a ${p.pushed_to} dispositivos
         </p>
@@ -732,10 +743,10 @@ async function loadProductos(page = pageState.productos || 1){
   data.items.forEach(prod => {
     const row = document.createElement('div');
     row.className = `product-card ${prod.active ? '' : 'inactive'}`;
-    const photo = prod.photo_url ? `<img src="${prod.photo_url}" alt="">` : '<div style="width:56px;height:56px;border-radius:10px;background:var(--bone)"></div>';
+    const photo = prod.photo_url ? `<img src="${escapeHtml(prod.photo_url)}" alt="">` : '<div style="width:56px;height:56px;border-radius:10px;background:var(--bone)"></div>';
     row.innerHTML = `${photo}
       <div style="flex:1">
-        <b>${prod.name}</b> ${prod.active ? '' : '<span class="pill">Inactivo</span>'}
+        <b>${escapeHtml(prod.name)}</b> ${prod.active ? '' : '<span class="pill">Inactivo</span>'}
         ${prod.price != null ? `<p style="font-size:.8rem;opacity:.7">S/ ${Number(prod.price).toFixed(2)}</p>` : ''}
       </div>`;
     const actions = document.createElement('div');
@@ -807,8 +818,8 @@ async function loadPerfilFields(){
   document.getElementById('perfil-empty').classList.toggle('hidden', data.items.length > 0);
   data.items.forEach(field => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${field.label}</td><td><code>${field.field_key}</code></td>
-      <td>${PF_TYPE_LABELS[field.field_type] || field.field_type}</td>
+    tr.innerHTML = `<td>${escapeHtml(field.label)}</td><td><code>${escapeHtml(field.field_key)}</code></td>
+      <td>${escapeHtml(PF_TYPE_LABELS[field.field_type] || field.field_type)}</td>
       <td>${field.required ? '✅' : '—'}</td><td>${field.active ? '✅' : '—'}</td><td></td>`;
     const actionTd = tr.lastElementChild;
 
@@ -871,7 +882,7 @@ async function loadSuscriptores(){
   document.getElementById('suscriptores-empty').classList.toggle('hidden', data.subscribers.length > 0);
   data.subscribers.forEach(s => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.nombre}</td><td>${s.telefono}</td><td>${s.dni}</td><td>${s.unasam}</td><td>${s.created_at}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(s.nombre)}</td><td>${escapeHtml(s.telefono)}</td><td>${escapeHtml(s.dni)}</td><td>${escapeHtml(s.unasam)}</td><td>${escapeHtml(s.created_at)}</td>`;
     body.appendChild(tr);
   });
 }
