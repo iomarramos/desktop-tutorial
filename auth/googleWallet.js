@@ -12,6 +12,16 @@ function isConfigured() {
   return configured;
 }
 
+// Aviso de proximidad nativo de Google Wallet: si el local tiene coordenadas
+// configuradas, el celular del cliente le muestra una notificación en la
+// pantalla de bloqueo al pasar cerca — lo maneja Google, no este servidor.
+// Completamente opcional: sin estas dos variables, la tarjeta funciona igual,
+// solo sin ese aviso.
+const LOCATION_LAT = process.env.GOOGLE_WALLET_LOCATION_LAT ? Number(process.env.GOOGLE_WALLET_LOCATION_LAT) : null;
+const LOCATION_LNG = process.env.GOOGLE_WALLET_LOCATION_LNG ? Number(process.env.GOOGLE_WALLET_LOCATION_LNG) : null;
+const hasStoreLocation =
+  LOCATION_LAT != null && !Number.isNaN(LOCATION_LAT) && LOCATION_LNG != null && !Number.isNaN(LOCATION_LNG);
+
 function sanitizeId(value) {
   return String(value).replace(/[^A-Za-z0-9_.-]/g, '_');
 }
@@ -150,6 +160,7 @@ function buildSaveUrl({ user, points }) {
     programName: 'DESENCAJADO Rewards',
     reviewStatus: 'UNDER_REVIEW',
     hexBackgroundColor: '#0D1B4B',
+    ...(hasStoreLocation ? { locations: [{ latitude: LOCATION_LAT, longitude: LOCATION_LNG }] } : {}),
   };
 
   const loyaltyObject = {
