@@ -129,6 +129,34 @@ db.exec(`
   )
 `);
 
+// Misiones con vencimiento corto (ej. "compra 3 veces esta semana = +20
+// estrellas"): el progreso NO se guarda aparte, se calcula contando las
+// compras del cliente dentro de [starts_at, ends_at] — así nunca se
+// desincroniza del historial real. mission_claims solo registra quién ya
+// cobró la recompensa, para no pagarla dos veces.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT,
+    target_count INTEGER NOT NULL,
+    reward_points INTEGER NOT NULL,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mission_claims (
+    mission_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (mission_id, user_id)
+  )
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS promotion_codes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,6 +239,17 @@ ensureColumn('users', 'telefono', 'TEXT');
 // cambia después del primer registro.
 ensureColumn('users', 'signup_source', "TEXT NOT NULL DEFAULT 'web'");
 
+// Precio especial para clientes logueados (combo solo-miembros, ej. Bembos):
+// NULL = el producto no tiene precio de socio, se vende solo al precio normal.
+ensureColumn('products', 'member_price', 'REAL');
+
+// Recompensa de cumpleaños: Google no entrega la fecha de nacimiento, así
+// que se pide aparte (opcional) y se revisa en cada login (ver /api/me).
+// last_birthday_bonus_year evita pagar el bono más de una vez el mismo año
+// sin importar cuántas veces el cliente entre ese día.
+ensureColumn('users', 'birthdate', 'TEXT');
+ensureColumn('users', 'last_birthday_bonus_year', 'INTEGER');
+
 // Único entre quienes ya lo llenaron: SQLite no deja agregar UNIQUE en un
 // ALTER TABLE ADD COLUMN, así que va como índice parcial aparte. Permite
 // múltiples NULL (usuarios que aún no completaron su perfil).
@@ -231,6 +270,7 @@ const SOLES_PER_PUNTO = Number(process.env.SOLES_PER_PUNTO) > 0 ? Number(process
 const REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD) > 0 ? Number(process.env.REWARD_THRESHOLD) : 50;
 const REFERRAL_BONUS_POINTS = Number(process.env.REFERRAL_BONUS_POINTS) >= 0 ? Number(process.env.REFERRAL_BONUS_POINTS) : 20;
 const REFERRAL_WELCOME_POINTS = Number(process.env.REFERRAL_WELCOME_POINTS) >= 0 ? Number(process.env.REFERRAL_WELCOME_POINTS) : 10;
+const BIRTHDAY_BONUS_POINTS = Number(process.env.BIRTHDAY_BONUS_POINTS) >= 0 ? Number(process.env.BIRTHDAY_BONUS_POINTS) : 30;
 const TOTP_MAX_ATTEMPTS = Number(process.env.TOTP_MAX_ATTEMPTS) > 0 ? Number(process.env.TOTP_MAX_ATTEMPTS) : 5;
 const TOTP_LOCKOUT_MINUTES = Number(process.env.TOTP_LOCKOUT_MINUTES) > 0 ? Number(process.env.TOTP_LOCKOUT_MINUTES) : 5;
 const TIER_SILVER_THRESHOLD = Number(process.env.TIER_SILVER_THRESHOLD) >= 0 ? Number(process.env.TIER_SILVER_THRESHOLD) : 100;
@@ -290,6 +330,17 @@ const updateUserProfileStmt = db.prepare(
   'UPDATE users SET name = ?, avatar_url = ? WHERE id = ?'
 );
 const setUserContactStmt = db.prepare('UPDATE users SET dni = ?, telefono = ? WHERE id = ?');
+const setUserBirthdateStmt = db.prepare('UPDATE users SET birthdate = ? WHERE id = ?');
+// Atómico a propósito (como claimSpinStmt): revisa "¿hoy es su cumpleaños y
+// no se le pagó ya este año?" y marca el año dentro de la misma sentencia,
+// así que dos /api/me casi simultáneos el día del cumpleaños no pagan el
+// bono dos veces.
+const grantBirthdayBonusStmt = db.prepare(`
+  UPDATE users SET last_birthday_bonus_year = CAST(strftime('%Y', 'now') AS INTEGER)
+  WHERE id = ? AND birthdate IS NOT NULL
+    AND strftime('%m-%d', birthdate) = strftime('%m-%d', 'now')
+    AND (last_birthday_bonus_year IS NULL OR last_birthday_bonus_year < CAST(strftime('%Y', 'now') AS INTEGER))
+`);
 const setReferredByStmt = db.prepare('UPDATE users SET referred_by = ? WHERE id = ? AND referred_by IS NULL');
 const deleteAllSessionsForUserStmt = db.prepare('DELETE FROM sessions WHERE user_id = ?');
 const setTotpSecretStmt = db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?');
@@ -341,6 +392,25 @@ function setUserContactInfo(userId, dni, telefono) {
     }
     throw err;
   }
+}
+
+// Fecha de nacimiento, opcional (a diferencia de dni/telefono no bloquea el
+// acceso a la cuenta) — es la base de la recompensa de cumpleaños.
+function setUserBirthdate(userId, birthdate) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birthdate) || Number.isNaN(new Date(birthdate).getTime())) {
+    throw new Error('INVALID_BIRTHDATE');
+  }
+  setUserBirthdateStmt.run(birthdate, userId);
+}
+
+// Se llama en cada login (ver /api/me): si hoy es el cumpleaños del cliente
+// y no se le pagó ya este año, le da BIRTHDAY_BONUS_POINTS una sola vez.
+function grantBirthdayBonusIfDue(userId) {
+  if (BIRTHDAY_BONUS_POINTS <= 0) return { granted: false, points: 0 };
+  const info = grantBirthdayBonusStmt.run(userId);
+  if (info.changes === 0) return { granted: false, points: 0 };
+  insertLedgerStmt.run(userId, BIRTHDAY_BONUS_POINTS, '🎂 Bono de cumpleaños');
+  return { granted: true, points: BIRTHDAY_BONUS_POINTS };
 }
 
 // Marca que el usuario abrió el link "Guardar en Google Wallet" — es la
@@ -481,7 +551,11 @@ function addPurchase({ userId, monto, producto }) {
   if (puntos > 0) {
     insertLedgerStmt.run(userId, puntos, `Compra #${info.lastInsertRowid}`);
   }
-  return { purchaseId: info.lastInsertRowid, puntos, balance: getPointsBalance(userId) };
+  // La compra recién guardada puede haber completado una misión vigente
+  // (ej. "3 compras esta semana") — se revisa aquí, justo cuando el
+  // progreso pudo haber cambiado, no en un cron aparte.
+  const missionsClaimed = claimDueMissions(userId);
+  return { purchaseId: info.lastInsertRowid, puntos, balance: getPointsBalance(userId), missionsClaimed };
 }
 
 function getPointsBalance(userId) {
@@ -679,16 +753,24 @@ function removeFamilyMember(ownerId, memberUserId) {
 // ───────────────────────── catálogo de productos ─────────────────────────
 
 const insertProductStmt = db.prepare(
-  'INSERT INTO products (name, photo_url, price) VALUES (?, ?, ?)'
+  'INSERT INTO products (name, photo_url, price, member_price) VALUES (?, ?, ?, ?)'
 );
 const getProductByIdStmt = db.prepare('SELECT * FROM products WHERE id = ?');
 const listActiveProductsStmt = db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY name');
+const listActiveCombosStmt = db.prepare(
+  'SELECT * FROM products WHERE active = 1 AND member_price IS NOT NULL ORDER BY name'
+);
 const adminListProductsStmt = db.prepare('SELECT * FROM products ORDER BY id DESC LIMIT ? OFFSET ?');
 const adminProductsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM products');
 const deactivateProductStmt = db.prepare('UPDATE products SET active = 0 WHERE id = ?');
 
-function createProduct({ name, photoUrl, price }) {
-  const info = insertProductStmt.run(name, photoUrl || null, price != null && price !== '' ? Number(price) : null);
+function createProduct({ name, photoUrl, price, memberPrice }) {
+  const info = insertProductStmt.run(
+    name,
+    photoUrl || null,
+    price != null && price !== '' ? Number(price) : null,
+    memberPrice != null && memberPrice !== '' ? Number(memberPrice) : null
+  );
   return getProductByIdStmt.get(info.lastInsertRowid);
 }
 
@@ -698,6 +780,12 @@ function getProductById(id) {
 
 function listActiveProducts() {
   return listActiveProductsStmt.all();
+}
+
+// Combos solo-miembros: catálogo de productos con precio de socio, visible
+// únicamente para clientes logueados en cuenta.html (Bembos-style).
+function listActiveCombos() {
+  return listActiveCombosStmt.all();
 }
 
 function adminListProducts({ limit = 20, page = 1 } = {}) {
@@ -714,17 +802,18 @@ function deactivateProduct(id) {
   deactivateProductStmt.run(id);
 }
 
-const updateProductStmt = db.prepare('UPDATE products SET name = ?, photo_url = ?, price = ? WHERE id = ?');
+const updateProductStmt = db.prepare('UPDATE products SET name = ?, photo_url = ?, price = ?, member_price = ? WHERE id = ?');
 const countPromotionProductsForProductStmt = db.prepare('SELECT COUNT(*) AS total FROM promotion_products WHERE product_id = ?');
 const deleteProductStmt = db.prepare('DELETE FROM products WHERE id = ?');
 
-function updateProduct(id, { name, photoUrl, price }) {
+function updateProduct(id, { name, photoUrl, price, memberPrice }) {
   const existing = getProductByIdStmt.get(id);
   if (!existing) throw new Error('PRODUCT_NOT_FOUND');
   updateProductStmt.run(
     name != null && name !== '' ? name : existing.name,
     photoUrl !== undefined ? (photoUrl || null) : existing.photo_url,
     price !== undefined ? (price != null && price !== '' ? Number(price) : null) : existing.price,
+    memberPrice !== undefined ? (memberPrice != null && memberPrice !== '' ? Number(memberPrice) : null) : existing.member_price,
     id
   );
   return getProductByIdStmt.get(id);
@@ -1199,6 +1288,104 @@ function deletePromotion(id) {
   if (info.changes === 0) throw new Error('PROMOTION_NOT_FOUND');
 }
 
+// ───────────────────────── misiones con vencimiento corto ─────────────────────────
+
+const insertMissionStmt = db.prepare(
+  'INSERT INTO missions (title, body, target_count, reward_points, starts_at, ends_at) VALUES (?, ?, ?, ?, ?, ?)'
+);
+const getMissionByIdStmt = db.prepare('SELECT * FROM missions WHERE id = ?');
+const adminListMissionsStmt = db.prepare('SELECT * FROM missions ORDER BY id DESC LIMIT ? OFFSET ?');
+const adminMissionsCountStmt = db.prepare('SELECT COUNT(*) AS total FROM missions');
+const deactivateMissionStmt = db.prepare('UPDATE missions SET active = 0 WHERE id = ?');
+const deleteMissionStmt = db.prepare('DELETE FROM missions WHERE id = ?');
+// Vigentes ahora mismo: activa, y la fecha de hoy cae dentro de [starts_at,
+// ends_at] (mismo estilo de comparación que las promociones).
+const listCurrentMissionsStmt = db.prepare(
+  `SELECT * FROM missions
+   WHERE active = 1 AND starts_at <= datetime('now') AND ends_at >= datetime('now')
+   ORDER BY ends_at ASC`
+);
+const countUserPurchasesInRangeStmt = db.prepare(
+  'SELECT COUNT(*) AS total FROM purchases WHERE user_id = ? AND created_at >= ? AND created_at <= ?'
+);
+const hasClaimedMissionStmt = db.prepare('SELECT 1 FROM mission_claims WHERE mission_id = ? AND user_id = ?');
+const insertMissionClaimStmt = db.prepare('INSERT OR IGNORE INTO mission_claims (mission_id, user_id) VALUES (?, ?)');
+
+function createMission({ title, body, targetCount, rewardPoints, startsAt, endsAt }) {
+  const info = insertMissionStmt.run(title, body || null, Number(targetCount), Number(rewardPoints), startsAt, endsAt);
+  return getMissionByIdStmt.get(info.lastInsertRowid);
+}
+
+function claimCountsByMissionId(missionIds) {
+  const map = new Map();
+  if (missionIds.length === 0) return map;
+  const placeholders = missionIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT mission_id, COUNT(*) AS total FROM mission_claims WHERE mission_id IN (${placeholders}) GROUP BY mission_id`)
+    .all(...missionIds);
+  for (const row of rows) map.set(row.mission_id, row.total);
+  return map;
+}
+
+function adminListMissions({ limit = 20, page = 1 } = {}) {
+  const p = paginate({ limit, page });
+  const items = adminListMissionsStmt.all(p.limit, p.offset);
+  const claimedMap = claimCountsByMissionId(items.map((m) => m.id));
+  return {
+    items: items.map((m) => ({ ...m, claimedCount: claimedMap.get(m.id) || 0 })),
+    total: adminMissionsCountStmt.get().total,
+    page: p.page,
+    limit: p.limit,
+  };
+}
+
+function deactivateMission(id) {
+  deactivateMissionStmt.run(id);
+}
+
+// Borrado real solo si nadie cobró la recompensa todavía (si no, se pierde
+// el historial de quién ya la cobró); si ya se cobró, hay que desactivarla.
+function deleteMission(id) {
+  const claimed = db.prepare('SELECT COUNT(*) AS total FROM mission_claims WHERE mission_id = ?').get(id).total;
+  if (claimed > 0) throw new Error('MISSION_HAS_CLAIMS');
+  const info = deleteMissionStmt.run(id);
+  if (info.changes === 0) throw new Error('MISSION_NOT_FOUND');
+}
+
+// Progreso del cliente en cada misión vigente ahora mismo — se calcula
+// contando sus compras dentro de la ventana de la misión, nunca se guarda
+// aparte, así que siempre refleja el historial real.
+function getUserMissionProgress(userId) {
+  const missions = listCurrentMissionsStmt.all();
+  return missions.map((mission) => {
+    const progress = countUserPurchasesInRangeStmt.get(userId, mission.starts_at, mission.ends_at).total;
+    const claimed = Boolean(hasClaimedMissionStmt.get(mission.id, userId));
+    return { ...mission, progress: Math.min(progress, mission.target_count), claimed };
+  });
+}
+
+// Se llama después de registrar una compra (ver addPurchase): si esa compra
+// hizo que el cliente complete alguna misión vigente que todavía no había
+// cobrado, le da la recompensa ahora mismo. insertMissionClaimStmt es
+// INSERT OR IGNORE sobre una PK (mission_id, user_id), así que si dos
+// compras casi simultáneas completan la misma misión, solo una cobra.
+function claimDueMissions(userId) {
+  const missions = listCurrentMissionsStmt.all();
+  const claimed = [];
+  for (const mission of missions) {
+    if (hasClaimedMissionStmt.get(mission.id, userId)) continue;
+    const progress = countUserPurchasesInRangeStmt.get(userId, mission.starts_at, mission.ends_at).total;
+    if (progress < mission.target_count) continue;
+    const info = insertMissionClaimStmt.run(mission.id, userId);
+    if (info.changes === 0) continue;
+    if (mission.reward_points > 0) {
+      insertLedgerStmt.run(userId, mission.reward_points, `🎯 Misión: ${mission.title}`);
+    }
+    claimed.push({ mission, points: mission.reward_points });
+  }
+  return claimed;
+}
+
 // ───────────────────────── notificaciones push ─────────────────────────
 
 const upsertPushSubscriptionStmt = db.prepare(
@@ -1537,6 +1724,8 @@ module.exports = {
   getUserByReferralCode,
   setReferredBy,
   setUserContactInfo,
+  setUserBirthdate,
+  grantBirthdayBonusIfDue,
   setTotpSecret,
   enableTotp,
   markWalletSaved,
@@ -1581,6 +1770,7 @@ module.exports = {
   createProduct,
   getProductById,
   listActiveProducts,
+  listActiveCombos,
   adminListProducts,
   deactivateProduct,
   updateProduct,
@@ -1612,6 +1802,13 @@ module.exports = {
   markPromotionActivated,
   updatePromotion,
   deletePromotion,
+  // misiones
+  createMission,
+  adminListMissions,
+  deactivateMission,
+  deleteMission,
+  getUserMissionProgress,
+  claimDueMissions,
   // push
   addPushSubscription,
   removePushSubscription,

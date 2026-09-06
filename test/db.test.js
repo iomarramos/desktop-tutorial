@@ -105,6 +105,22 @@ test('productos: crear, editar, y bloquear borrado si está en uso', () => {
   assert.equal(db.getProductById(product.id), undefined);
 });
 
+test('combos solo-miembros: solo aparecen los productos con precio de socio', () => {
+  const before = db.listActiveCombos().length;
+
+  const normal = db.createProduct({ name: 'Café normal', photoUrl: null, price: 5 });
+  const combo = db.createProduct({ name: 'Combo Socio', photoUrl: null, price: 20, memberPrice: 15 });
+
+  const combos = db.listActiveCombos();
+  assert.equal(combos.length, before + 1);
+  assert.ok(!combos.some((p) => p.id === normal.id));
+  assert.ok(combos.some((p) => p.id === combo.id && p.member_price === 15));
+
+  const updated = db.updateProduct(combo.id, { memberPrice: null });
+  assert.equal(updated.member_price, null);
+  assert.equal(db.listActiveCombos().length, before);
+});
+
 // ───────────────────────── promociones y canje ─────────────────────────
 
 test('promociones: código de publicación autogenerado y edición', () => {
@@ -285,6 +301,102 @@ test('adminSignupSourceCounts: cuenta cuántos vinieron del QR del local vs. la 
   const after = db.adminSignupSourceCounts();
   assert.equal(after.local, before.local + 1);
   assert.equal(after.web, before.web);
+});
+
+// ───────────────────────── recompensa de cumpleaños ─────────────────────────
+
+test('cumpleaños: rechaza fechas inválidas', () => {
+  const user = makeUser('Cumple Inválido');
+  assert.throws(() => db.setUserBirthdate(user.id, 'no-es-fecha'), /INVALID_BIRTHDATE/);
+  assert.throws(() => db.setUserBirthdate(user.id, '31-12-2000'), /INVALID_BIRTHDATE/);
+});
+
+test('cumpleaños: da el bono solo el día correcto y solo una vez al año', () => {
+  const today = new Date();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+
+  const birthdayUser = makeUser('Cumple Hoy');
+  db.setUserBirthdate(birthdayUser.id, `1995-${mm}-${dd}`);
+
+  const otherUser = makeUser('Cumple Otro Día');
+  const otherMonth = mm === '01' ? '02' : '01';
+  db.setUserBirthdate(otherUser.id, `1995-${otherMonth}-15`);
+
+  const balanceBefore = db.getPointsBalance(birthdayUser.id);
+
+  const first = db.grantBirthdayBonusIfDue(birthdayUser.id);
+  assert.equal(first.granted, true);
+  assert.ok(first.points > 0);
+  assert.equal(db.getPointsBalance(birthdayUser.id), balanceBefore + first.points);
+
+  // segunda vez el mismo año: no se repite
+  const second = db.grantBirthdayBonusIfDue(birthdayUser.id);
+  assert.equal(second.granted, false);
+  assert.equal(db.getPointsBalance(birthdayUser.id), balanceBefore + first.points);
+
+  // otro usuario cuyo cumpleaños no es hoy: nunca se le da
+  const notToday = db.grantBirthdayBonusIfDue(otherUser.id);
+  assert.equal(notToday.granted, false);
+});
+
+// ───────────────────────── misiones con vencimiento corto ─────────────────────────
+
+function isoOffset(days) {
+  const d = new Date(Date.now() + days * 86400000);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+test('misiones: el progreso se calcula de las compras y solo se cobra una vez al completar', () => {
+  const mission = db.createMission({
+    title: 'Compra 2 veces',
+    body: 'Cualquier compra cuenta',
+    targetCount: 2,
+    rewardPoints: 15,
+    startsAt: isoOffset(-1),
+    endsAt: isoOffset(1),
+  });
+
+  const user = makeUser('Misionero');
+
+  let progress = db.getUserMissionProgress(user.id).find((m) => m.id === mission.id);
+  assert.equal(progress.progress, 0);
+  assert.equal(progress.claimed, false);
+
+  const r1 = db.addPurchase({ userId: user.id, monto: 10, producto: 'x' });
+  assert.equal(r1.missionsClaimed.length, 0);
+  progress = db.getUserMissionProgress(user.id).find((m) => m.id === mission.id);
+  assert.equal(progress.progress, 1);
+
+  const balanceBeforeComplete = db.getPointsBalance(user.id);
+  const r2 = db.addPurchase({ userId: user.id, monto: 10, producto: 'x' });
+  assert.equal(r2.missionsClaimed.length, 1);
+  assert.equal(r2.missionsClaimed[0].points, 15);
+  assert.equal(db.getPointsBalance(user.id), balanceBeforeComplete + 2 + 15); // +2 de la compra, +15 de la misión
+
+  // una tercera compra no debe volver a pagar la misión
+  const r3 = db.addPurchase({ userId: user.id, monto: 10, producto: 'x' });
+  assert.equal(r3.missionsClaimed.length, 0);
+  progress = db.getUserMissionProgress(user.id).find((m) => m.id === mission.id);
+  assert.equal(progress.claimed, true);
+  assert.equal(progress.progress, 2); // no sube más allá de la meta
+
+  assert.throws(() => db.deleteMission(mission.id), /MISSION_HAS_CLAIMS/);
+  db.deactivateMission(mission.id);
+  assert.equal(db.getUserMissionProgress(user.id).some((m) => m.id === mission.id), false);
+});
+
+test('misiones: una vigencia fuera de rango no aparece en el progreso del cliente', () => {
+  const mission = db.createMission({
+    title: 'Misión futura',
+    targetCount: 1,
+    rewardPoints: 5,
+    startsAt: isoOffset(5),
+    endsAt: isoOffset(10),
+  });
+  const user = makeUser('Sin misión activa');
+  assert.equal(db.getUserMissionProgress(user.id).some((m) => m.id === mission.id), false);
+  db.deleteMission(mission.id);
 });
 
 // ───────────────────────── niveles de fidelidad ─────────────────────────
@@ -487,7 +599,10 @@ test('getPromotionNonRedeemers: excluye a quien canjeó, pagina y busca por nomb
   db.addPromotionCode(promo.id, { code: 'NOCANJE1', label: null, maxUses: null });
   db.redeemPromotionCode('NOCANJE1', redeemer.id);
 
-  const all = db.getPromotionNonRedeemers(promo.id, { limit: 50 });
+  // Con q filtramos a los usuarios de este test — sin esto, "limit: 50" no
+  // alcanza a los usuarios recién creados si el archivo entero ya generó
+  // más de 50 usuarios en tests anteriores (se vuelve flaky con el tiempo).
+  const all = db.getPromotionNonRedeemers(promo.id, { limit: 50, q: 'NoCanjeo' });
   const ids = all.items.map((u) => u.user_id);
   assert.ok(ids.includes(pending1.id));
   assert.ok(ids.includes(pending2.id));

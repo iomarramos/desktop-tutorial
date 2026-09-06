@@ -5,16 +5,17 @@ const crypto = require('node:crypto');
 const {
   addSubscriber, dniExists, getCount, listSubscribers,
   upsertGoogleUser, getUserById, getUserByEmail, getUserByReferralCode, setReferredBy,
-  setUserContactInfo, setTotpSecret, enableTotp, markWalletSaved, listWalletSavedUserIds,
+  setUserContactInfo, setUserBirthdate, grantBirthdayBonusIfDue, setTotpSecret, enableTotp, markWalletSaved, listWalletSavedUserIds,
   createSession, getSession, setSessionStage, deleteSession, deleteAllSessionsForUser,
   isTotpLocked, registerTotpFailure, resetTotpAttempts, TOTP_LOCKOUT_MINUTES,
   addPurchase, getPointsBalance, listPurchasesByUser, redeemPoints, getRewardProgress, SOLES_PER_PUNTO,
   getTierForUser, spinWheel, getSpinStatus,
   createFamilyGroup, joinFamilyGroup, getFamilyGroupForUser, leaveFamilyGroup, removeFamilyMember,
-  createProduct, listActiveProducts, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
+  createProduct, listActiveProducts, listActiveCombos, adminListProducts, deactivateProduct, updateProduct, deleteProduct,
   createProfileField, getProfileFieldByKey, adminListProfileFields,
   updateProfileField, deleteProfileField, getUserProfileValues, getMissingRequiredFields, setUserProfileValues,
   createPromotion, addPromotionCode, redeemPromotionCode, findActivePromotionByTitle,
+  createMission, adminListMissions, deactivateMission, deleteMission, getUserMissionProgress,
   getPromotionRedeemers, getPromotionNonRedeemers, adminPromotionsSummary, adminTopCustomersByPurchases, adminRecurringPromoCustomers,
   listActivePromotions, adminListPromotions, deactivatePromotion, markPromotionPushed,
   listPromotionsReadyToActivate, markPromotionActivated,
@@ -221,6 +222,7 @@ function serializeUser(user) {
     spinStatus: getSpinStatus(user.id),
     profileFields: getUserProfileValues(user.id),
     referralCode: user.referral_code,
+    birthdate: user.birthdate,
     totpEnabled: Boolean(user.totp_enabled),
     familyGroup: family,
     solesPerPunto: SOLES_PER_PUNTO,
@@ -270,7 +272,36 @@ async function handleMe(req, res) {
     });
   }
 
-  sendJson(res, 200, { authenticated: true, stage: 'active', user: serializeUser(user) });
+  // Se revisa en cada login: si hoy es su cumpleaños y no se le pagó ya
+  // este año, se le da el bono antes de armar la respuesta (así reward/tier
+  // ya salen con el saldo actualizado).
+  const birthdayBonus = grantBirthdayBonusIfDue(user.id);
+
+  sendJson(res, 200, {
+    authenticated: true,
+    stage: 'active',
+    user: serializeUser(user),
+    ...(birthdayBonus.granted ? { birthdayBonus } : {}),
+  });
+}
+
+async function handleSetBirthdate(req, res) {
+  const found = getSessionFromRequest(req);
+  if (!found) return sendJson(res, 401, { ok: false, error: 'No autenticado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  try {
+    setUserBirthdate(found.session.user_id, String(body.birthdate || ''));
+    sendJson(res, 200, { ok: true });
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'Fecha inválida. Usa el formato AAAA-MM-DD.' });
+  }
 }
 
 async function handleProfileComplete(req, res) {
@@ -1088,6 +1119,90 @@ async function handleAdminPromotionAddCode(req, res) {
   sendJson(res, 201, { ok: true, promotion });
 }
 
+// ───────────────────────── misiones con vencimiento corto ─────────────────────────
+
+function handleAdminMissionsList(req, res, query) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, ...adminListMissions(paginationParams(query)) });
+}
+
+async function handleAdminMissionCreate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  const title = String(body.title || '').trim();
+  const targetCount = Number(body.targetCount);
+  const rewardPoints = Number(body.rewardPoints);
+  if (!title || !(targetCount > 0) || !(rewardPoints >= 0) || !body.startsAt || !body.endsAt) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: 'La misión necesita título, meta de compras, recompensa y fechas de inicio/fin.',
+    });
+  }
+
+  const mission = createMission({
+    title,
+    body: body.body || null,
+    targetCount,
+    rewardPoints,
+    startsAt: body.startsAt,
+    endsAt: body.endsAt,
+  });
+  sendJson(res, 201, { ok: true, mission });
+}
+
+async function handleAdminMissionDeactivate(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la misión.' });
+  deactivateMission(body.id);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminMissionDelete(req, res) {
+  if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
+  }
+
+  if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id de la misión.' });
+
+  try {
+    deleteMission(body.id);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    const msg = err.message === 'MISSION_HAS_CLAIMS'
+      ? 'Esta misión ya tiene clientes que cobraron la recompensa: no se puede borrar, solo desactivar.'
+      : 'Misión no encontrada.';
+    sendJson(res, 400, { ok: false, error: msg });
+  }
+}
+
+// Progreso del cliente logueado en las misiones vigentes ahora mismo —
+// se recalcula en cada carga, no se guarda en el front.
+function handleMyMissions(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, items: getUserMissionProgress(user.id) });
+}
+
 // ───────────────────────── administrador: catálogo de productos ─────────────────────────
 
 function handleAdminProductsList(req, res, query) {
@@ -1098,6 +1213,14 @@ function handleAdminProductsList(req, res, query) {
 function handleAdminProductsActive(req, res) {
   if (!isAuthorizedAdmin(req)) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
   sendJson(res, 200, { ok: true, items: listActiveProducts() });
+}
+
+// Combos solo-miembros (Bembos-style): catálogo con precio de socio, visible
+// únicamente para clientes ya logueados en cuenta.html.
+function handleCombos(req, res) {
+  const user = requireActiveUser(req);
+  if (!user) return sendJson(res, 401, { ok: false, error: 'No autorizado.' });
+  sendJson(res, 200, { ok: true, items: listActiveCombos() });
 }
 
 async function handleAdminProductCreate(req, res) {
@@ -1113,7 +1236,7 @@ async function handleAdminProductCreate(req, res) {
   const name = String(body.name || '').trim();
   if (!name) return sendJson(res, 400, { ok: false, error: 'El producto necesita un nombre.' });
 
-  const product = createProduct({ name, photoUrl: body.photoUrl, price: body.price });
+  const product = createProduct({ name, photoUrl: body.photoUrl, price: body.price, memberPrice: body.memberPrice });
   sendJson(res, 201, { ok: true, product });
 }
 
@@ -1145,7 +1268,7 @@ async function handleAdminProductUpdate(req, res) {
   if (!body.id) return sendJson(res, 400, { ok: false, error: 'Falta el id del producto.' });
 
   try {
-    const product = updateProduct(body.id, { name: body.name, photoUrl: body.photoUrl, price: body.price });
+    const product = updateProduct(body.id, { name: body.name, photoUrl: body.photoUrl, price: body.price, memberPrice: body.memberPrice });
     sendJson(res, 200, { ok: true, product });
   } catch {
     sendJson(res, 404, { ok: false, error: 'Producto no encontrado.' });
@@ -1380,6 +1503,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/logout-all') return handleLogoutAll(req, res);
     if (req.method === 'GET' && url === '/api/me') return handleMe(req, res);
     if (req.method === 'POST' && url === '/api/profile/complete') return handleProfileComplete(req, res);
+    if (req.method === 'POST' && url === '/api/profile/birthdate') return handleSetBirthdate(req, res);
     if (req.method === 'POST' && url === '/api/2fa/setup') return handleTotpSetup(req, res);
     if (req.method === 'POST' && url === '/api/2fa/verify') return handleTotpVerify(req, res);
 
@@ -1422,8 +1546,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/admin/promotions/update') return handleAdminPromotionUpdate(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/delete') return handleAdminPromotionDelete(req, res);
     if (req.method === 'POST' && url === '/api/admin/promotions/codes') return handleAdminPromotionAddCode(req, res);
+    if (req.method === 'GET' && url === '/api/admin/missions') return handleAdminMissionsList(req, res, query);
+    if (req.method === 'POST' && url === '/api/admin/missions') return handleAdminMissionCreate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/missions/deactivate') return handleAdminMissionDeactivate(req, res);
+    if (req.method === 'POST' && url === '/api/admin/missions/delete') return handleAdminMissionDelete(req, res);
+    if (req.method === 'GET' && url === '/api/missions') return handleMyMissions(req, res);
     if (req.method === 'GET' && url === '/api/admin/products') return handleAdminProductsList(req, res, query);
     if (req.method === 'GET' && url === '/api/admin/products/active') return handleAdminProductsActive(req, res);
+    if (req.method === 'GET' && url === '/api/products/combos') return handleCombos(req, res);
     if (req.method === 'POST' && url === '/api/admin/products') return handleAdminProductCreate(req, res);
     if (req.method === 'POST' && url === '/api/admin/products/deactivate') return handleAdminProductDeactivate(req, res);
     if (req.method === 'POST' && url === '/api/admin/products/update') return handleAdminProductUpdate(req, res);

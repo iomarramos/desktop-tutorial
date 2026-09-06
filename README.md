@@ -247,6 +247,14 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
   el popup/banner). No incluye los códigos de canje.
 - `POST /api/promotions/redeem` — Body `{ code }`. Canjea un código de
   promoción (requiere sesión activa); valida vigencia y límite de usos.
+- `GET /api/products/combos` — Catálogo de productos con "precio miembro"
+  (combos solo-socios, ver más abajo). Requiere sesión activa.
+- `GET /api/missions` — Progreso del cliente en las misiones vigentes ahora
+  mismo: `{ id, title, body, target_count, reward_points, ends_at, progress,
+  claimed }`. El progreso se calcula de sus compras, no se guarda aparte.
+- `POST /api/profile/birthdate` — Body `{ birthdate }` (`AAAA-MM-DD`).
+  Guarda la fecha de nacimiento del cliente (una sola vez; Google no la
+  entrega). Habilita la recompensa de cumpleaños — ver más abajo.
 - `GET /api/wallet/google-pass` — Devuelve `{ saveUrl }` para el botón
   "Agregar a Google Wallet" (501 si no está configurado).
 - `GET /api/push/vapid-public-key` — Clave pública VAPID (no requiere sesión).
@@ -301,6 +309,17 @@ vuelve a aparecer una vez visto (se recuerda por `publication_code` en
 - `GET /api/admin/promotions/non-redeemers?id=&page=&limit=&q=` — Quién NO
   canjeó ningún código de esa promoción todavía, paginado y con búsqueda
   por nombre/correo (el complemento de `redeemers`).
+- `GET /api/admin/missions?page=&limit=` — Misiones (activas, inactivas y
+  vencidas) con `claimedCount` — cuántos clientes ya cobraron cada una.
+- `POST /api/admin/missions` — Body
+  `{ title, body, targetCount, rewardPoints, startsAt, endsAt }`. Crea una
+  misión con vencimiento corto (ej. "compra 3 veces esta semana"). El
+  progreso de cada cliente se calcula contando sus compras dentro de
+  `[startsAt, endsAt]`; al completar la meta se le da `rewardPoints` una
+  sola vez, automático, justo al registrarle la compra que la completa.
+- `POST /api/admin/missions/deactivate` — Body `{ id }`.
+- `POST /api/admin/missions/delete` — Body `{ id }`. Borrado real; falla si
+  algún cliente ya cobró la recompensa (desactivar en ese caso).
 - `GET /api/admin/reports/top-customers?page=&limit=&q=&minCompras=&sortBy=`
   — Clientes ordenados por compras, gasto total o frecuencia
   (`sortBy`: `num_compras` | `total_gastado` | `comprasPorSemana`).
@@ -374,6 +393,25 @@ ver su tarjeta. No hace falta una app aparte ni geolocalización en el
 navegador: es una función nativa de las tarjetas de lealtad de Wallet, y
 como todo lo de Google Wallet en este proyecto, es opcional — sin esas dos
 variables la tarjeta funciona exactamente igual, solo sin ese aviso.
+
+## Combos, cumpleaños y misiones
+
+Tres formas adicionales de dar puntos/beneficios, todas opcionales y sin
+tocar el esquema de puntos existente:
+
+- **Combos solo-miembros** — un producto con "precio miembro" (tab
+  Productos del admin) aparece automáticamente en `cuenta.html` con el
+  precio normal tachado y el precio de socio destacado, visible solo si el
+  cliente está logueado (`GET /api/products/combos`).
+- **Recompensa de cumpleaños** — el cliente guarda su fecha de nacimiento
+  una vez desde `cuenta.html` (Google no la entrega); en cada login se
+  revisa si es su día y no se le pagó ya este año, y si corresponde se le
+  dan `BIRTHDAY_BONUS_POINTS` (default 30) automáticamente.
+- **Misiones con vencimiento corto** — el admin crea una misión (ej.
+  "compra 3 veces esta semana = +20 estrellas") con meta, recompensa y
+  vigencia; el progreso de cada cliente se calcula contando sus compras
+  dentro de esa ventana (nunca se guarda aparte) y la recompensa se paga
+  una sola vez, justo al completarse, antes de que venza.
 
 ## Seguridad
 
