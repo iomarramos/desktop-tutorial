@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "test:onboarding": "node scripts/onboarding-smoke.js",
+    "preflight:production": "node scripts/preflight.js",
     "backup": "node scripts/backup.js"
   },
   "dependencies": {

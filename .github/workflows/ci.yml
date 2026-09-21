@@ -37,6 +37,9 @@ jobs:
       - name: Ejecutar tests
         run: npm test
 
+      - name: Recorrer onboarding con cuenta aislada
+        run: npm run test:onboarding
+
       - name: Smoke test del servidor
         run: |
           set -e
@@ -53,3 +56,19 @@ jobs:
           kill $SERVER_PID
         env:
           DB_FILE: /tmp/ci-smoke.sqlite
+
+      - name: Build y arranque real de Docker
+        run: |
+          set -e
+          docker build -t desencajado-ci .
+          docker run -d --name desencajado-ci \
+            -e NODE_ENV=test \
+            -e PORT=3000 \
+            -p 3998:3000 \
+            desencajado-ci
+          trap 'docker rm -f desencajado-ci' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3998/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:3998/api/health | grep -q '"status":"ready"'

@@ -103,6 +103,30 @@ npm start
 El servidor levanta en `http://localhost:3000` (o el puerto indicado por la
 variable de entorno `PORT`).
 
+### Recorrer el alta sin crear clientes reales
+
+```bash
+npm run test:onboarding
+```
+
+El script levanta una base SQLite temporal, crea una identidad de prueba
+aislada, completa perfil + TOTP, verifica que llega a la wallet y borra el
+entorno al terminar. El endpoint que lo permite queda deshabilitado de forma
+forzosa cuando `NODE_ENV=production`.
+
+### Puerta de producción
+
+```bash
+# Google OAuth obligatorio; Push y Wallet informan advertencias
+npm run preflight:production
+
+# Bloquea también si Push o Wallet no están listos
+npm run preflight:production -- --strict-integrations
+```
+
+La lista de pruebas manuales y la propuesta para dividir este PR están en
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md).
+
 ## Cómo funciona
 
 - `server.js`: servidor HTTP que sirve `public/` y expone toda la API.

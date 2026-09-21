@@ -30,6 +30,7 @@ const totp = require('./auth/totp');
 const push = require('./auth/push');
 const googleWallet = require('./auth/googleWallet');
 const { checkRateLimit } = require('./auth/rateLimit');
+const { validateProductionConfig } = require('./config/productionReadiness');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -37,6 +38,8 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
+const TEST_MODE_ENABLED = process.env.TEST_MODE_ENABLED === 'true' && process.env.NODE_ENV !== 'production';
+const TEST_MODE_TOKEN = process.env.TEST_MODE_TOKEN || '';
 const SESSION_COOKIE = 'sid';
 const STATE_COOKIE = 'oauth_state';
 const REF_COOKIE = 'pending_ref';
@@ -206,6 +209,54 @@ function requireActiveUser(req) {
   return getUserById(found.session.user_id);
 }
 
+function handleHealth(req, res) {
+  const production = process.env.NODE_ENV === 'production';
+  const readiness = validateProductionConfig(process.env, {
+    strictIntegrations: process.env.HEALTH_STRICT_INTEGRATIONS === 'true',
+  });
+  const ok = !production || readiness.ok;
+  sendJson(res, ok ? 200 : 503, {
+    ok,
+    status: ok ? 'ready' : 'blocked',
+    uptimeSeconds: Math.floor(process.uptime()),
+    integrations: readiness.integrations,
+    ...(production && !ok ? { blockers: readiness.blockers } : {}),
+  });
+}
+
+function testTokenMatches(candidate) {
+  if (!TEST_MODE_ENABLED || TEST_MODE_TOKEN.length < 16 || !candidate) return false;
+  const expected = Buffer.from(TEST_MODE_TOKEN);
+  const received = Buffer.from(String(candidate));
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
+}
+
+// Crea un usuario nuevo y aislado para recorrer el onboarding sin Google ni
+// datos de clientes reales. No existe cuando NODE_ENV=production y requiere
+// un token explícito aun en desarrollo/CI.
+function handleTestSession(req, res) {
+  if (!testTokenMatches(req.headers['x-test-token'])) {
+    return sendJson(res, 404, { ok: false, error: 'No encontrado.' });
+  }
+  const id = crypto.randomUUID();
+  const user = upsertGoogleUser({
+    googleId: `test:${id}`,
+    email: `cliente-${id}@example.invalid`,
+    name: 'Cliente de prueba',
+    avatarUrl: null,
+    source: 'web',
+  });
+  const token = createSession(user.id, 'needs_2fa_setup');
+  sendJson(res, 201, {
+    ok: true,
+    next: '/cuenta.html',
+    testUser: { id: user.id, email: user.email },
+  }, {
+    'Set-Cookie': cookieString(req, SESSION_COOKIE, token, { maxAge: 3600 }),
+    'Cache-Control': 'no-store',
+  });
+}
+
 // ───────────────────────── perfil / wallet ─────────────────────────
 
 function serializeUser(user) {
@@ -360,8 +411,11 @@ async function handleGoogleCallback(req, res, query) {
   const state = query.get('state');
 
   if (!code || !state || state !== cookies[STATE_COOKIE]) {
-    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end('Solicitud de login inválida o expirada.');
+    res.writeHead(302, {
+      Location: '/cuenta.html?auth_error=expired',
+      'Set-Cookie': clearCookieString(req, STATE_COOKIE),
+    });
+    return res.end();
   }
 
   try {
@@ -403,9 +457,13 @@ async function handleGoogleCallback(req, res, query) {
       ],
     });
     res.end();
-  } catch {
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('No pudimos verificar tu cuenta de Google. Intenta de nuevo.');
+  } catch (err) {
+    console.error('Error en Google OAuth:', err.message);
+    res.writeHead(302, {
+      Location: '/cuenta.html?auth_error=google',
+      'Set-Cookie': clearCookieString(req, STATE_COOKIE),
+    });
+    res.end();
   }
 }
 
@@ -1491,6 +1549,9 @@ const server = http.createServer(async (req, res) => {
   const query = fullUrl.searchParams;
 
   try {
+    if (req.method === 'GET' && url === '/api/health') return handleHealth(req, res);
+    if (req.method === 'POST' && url === '/api/test/session') return handleTestSession(req, res);
+
     // suscripción pre-apertura
     if (req.method === 'POST' && url === '/api/subscribe') return handleSubscribe(req, res);
     if (req.method === 'GET' && url === '/api/subscribe/count') return handleCount(req, res);

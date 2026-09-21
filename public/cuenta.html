@@ -43,6 +43,11 @@ p.lead{line-height:1.7;opacity:.85;max-width:56ch}
 .btn.google{background:#fff;color:#1f1f1f;border:2px solid rgba(26,26,26,.15);box-shadow:none}
 .btn.small{padding:.55rem 1.1rem;font-size:.8rem;box-shadow:3px 3px 0 var(--fuchsia)}
 .btn.wallet{background:#000;color:#fff;box-shadow:none;padding:.7rem 1.4rem}
+.onboarding-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin:1rem 0 1.4rem}
+.onboarding-step{padding:.55rem .35rem;border:2px solid rgba(26,26,26,.15);border-radius:12px;text-align:center;font-size:.72rem;font-weight:700}
+.onboarding-step.active{background:var(--yellow);border-color:var(--navy)}
+.onboarding-step.done{background:var(--navy);border-color:var(--navy);color:#fff}
+.trust-note{margin-top:1rem;padding:.85rem 1rem;border-radius:12px;background:#f3f6fb;font-size:.78rem;line-height:1.5}
 
 .spinner{width:34px;height:34px;border-radius:50%;border:4px solid rgba(26,26,26,.15);border-top-color:var(--fuchsia);
   animation:spin .8s linear infinite;margin:3rem auto}
@@ -146,22 +151,30 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 
 <!-- ═══ ESTADO: NO AUTENTICADO ═══ -->
 <section id="view-login" class="card hidden">
-  <span class="kicker">// Wallet DESENCAJADO</span>
-  <h1>Entra a tu cuenta</h1>
-  <p class="lead">Inicia sesión con Google para ver tus estrellas acumuladas, tu historial de consumo, tu código de referido y tu grupo familiar.</p>
+  <span class="kicker">// Paso 1 de 3</span>
+  <h1>Activa tu wallet de estrellas</h1>
+  <div class="onboarding-steps" aria-label="Progreso de registro">
+    <div class="onboarding-step active">1. Google</div><div class="onboarding-step">2. Datos</div><div class="onboarding-step">3. Seguridad</div>
+  </div>
+  <p class="lead">Entra con Google para acumular estrellas, ver tus compras y canjear beneficios. Crear tu wallet toma unos minutos y no publica nada en tu cuenta.</p>
   <div style="margin-top:1.6rem">
     <a class="btn google" id="google-btn" href="/auth/google">
       <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.9 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.5 0 10.5-2.1 14.2-5.6l-6.6-5.6C29.6 34.7 27 35.5 24 35.5c-5.2 0-9.6-3.3-11.3-8l-6.6 5.1C9.6 39.6 16.3 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.3-4.1 5.8l6.6 5.6C41.8 35.9 44 30.4 44 24c0-1.3-.1-2.7-.4-3.5z"/></svg>
       Continuar con Google
     </a>
   </div>
+  <p class="trust-note">Google nos entrega únicamente tu nombre, correo y foto. El DNI y celular se solicitan después para identificar tus compras en el local.</p>
+  <div class="msg" id="login-msg"></div>
 </section>
 
 <!-- ═══ ESTADO: COMPLETAR PERFIL (primera vez) ═══ -->
 <section id="view-profile-complete" class="card hidden">
-  <span class="kicker">// Paso 1 de 2</span>
+  <span class="kicker">// Paso 2 de 3</span>
   <h1>Completa tu perfil<span id="profile-name"></span></h1>
-  <p class="lead">Necesitamos tu DNI y celular para vincular tu wallet — así podemos avisarte de promociones y, más adelante, sorprenderte en tu cumpleaños.</p>
+  <div class="onboarding-steps" aria-label="Progreso de registro">
+    <div class="onboarding-step done">✓ Google</div><div class="onboarding-step active">2. Datos</div><div class="onboarding-step">3. Seguridad</div>
+  </div>
+  <p class="lead">Usamos tu DNI para asociar compras sin duplicar cuentas y tu celular para ayudarte a identificarte en el local. Las promociones requieren un permiso separado.</p>
   <div class="field">
     <label for="profile-dni">DNI</label>
     <input type="text" id="profile-dni" inputmode="numeric" maxlength="8" placeholder="12345678">
@@ -186,13 +199,17 @@ footer{background:#081130;color:rgba(255,255,255,.7);padding:2rem 5vw;text-align
 
 <!-- ═══ ESTADO: CONFIGURAR 2FA (primera vez) ═══ -->
 <section id="view-2fa-setup" class="card hidden">
-  <span class="kicker">// Paso 2 de 2</span>
-  <h1>Activa la verificación en dos pasos</h1>
-  <p class="lead">Escanea este código QR con Google Authenticator, Authy o similar. Es obligatorio para proteger tus puntos.</p>
+  <span class="kicker">// Paso 3 de 3</span>
+  <h1>Protege tus estrellas</h1>
+  <div class="onboarding-steps" aria-label="Progreso de registro">
+    <div class="onboarding-step done">✓ Google</div><div class="onboarding-step done">✓ Datos</div><div class="onboarding-step active">3. Seguridad</div>
+  </div>
+  <p class="lead">Escanea el QR con Google Authenticator, Microsoft Authenticator o Authy. Luego escribe el código de 6 dígitos. Este paso protege tus canjes y datos personales.</p>
   <div class="qr-box">
     <div id="qr-canvas"></div>
     <span class="secret" id="setup-secret"></span>
   </div>
+  <p class="trust-note">Guarda también la clave escrita en un lugar seguro. La necesitarás si cambias o pierdes el celular. Nunca se envía a Google ni a terceros.</p>
   <div class="field">
     <label for="setup-code">Ingresa el código de 6 dígitos que muestra tu app</label>
     <div class="otp-row">
@@ -438,6 +455,15 @@ async function init(){
   if (fuente === 'local') authParams.set('fuente', fuente);
   if ([...authParams].length > 0) {
     document.getElementById('google-btn').href = `/auth/google?${authParams}`;
+  }
+
+  const authError = params.get('auth_error');
+  if (authError) {
+    const message = authError === 'expired'
+      ? 'La solicitud de ingreso venció o ya fue usada. Intenta nuevamente.'
+      : 'Google no pudo confirmar tu cuenta. Intenta otra vez; si continúa, avísanos.';
+    setMsg('login-msg', 'error', message);
+    history.replaceState({}, '', location.pathname);
   }
 
   const { data } = await api('/api/me');
@@ -952,8 +978,15 @@ function urlBase64ToUint8Array(base64String){
 
 async function setupPushButton(user){
   const btn = document.getElementById('push-btn');
-  if (!user.pushConfigured || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+  if (!user.pushConfigured || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
     btn.classList.add('hidden');
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    btn.textContent = '🔕 Notificaciones bloqueadas';
+    btn.disabled = true;
+    btn.title = 'Habilítalas desde la configuración del navegador.';
     return;
   }
 
@@ -974,7 +1007,10 @@ async function setupPushButton(user){
   btn.onclick = async () => {
     btn.disabled = true;
     try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('PUSH_PERMISSION_NOT_GRANTED');
       const { data } = await api('/api/push/vapid-public-key');
+      if (!data.configured || !data.publicKey) throw new Error('PUSH_NOT_CONFIGURED');
       const reg = await navigator.serviceWorker.register('/sw.js');
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,

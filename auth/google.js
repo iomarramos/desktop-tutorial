@@ -41,6 +41,9 @@ async function verifyIdToken(idToken, clientId) {
   if (payload.iss !== 'https://accounts.google.com' && payload.iss !== 'accounts.google.com') {
     throw new Error('GOOGLE_TOKEN_ISS_MISMATCH');
   }
+  if (!payload.sub || !payload.email) throw new Error('GOOGLE_TOKEN_PROFILE_INCOMPLETE');
+  if (String(payload.email_verified) !== 'true') throw new Error('GOOGLE_EMAIL_NOT_VERIFIED');
+  if (!payload.exp || Number(payload.exp) * 1000 <= Date.now()) throw new Error('GOOGLE_TOKEN_EXPIRED');
   return payload;
 }
 
